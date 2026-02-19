@@ -1,48 +1,63 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
   atomicSwapSymlink,
-  pruneOldBuilds,
   readDeployState,
   writeDeployState,
 } from "./build-dir.js";
+import {
+  DEVOPS_LAST_RESULT_FILE,
+  DEVOPS_LOG_FILE,
+  createLogger,
+  readRecentLogs,
+} from "./logger.js";
 import { formatResult, runShell } from "./run.js";
 import type { DevOpsConfig } from "./types.js";
 import {
   AUTO_ROLLBACK_SECONDS_DEFAULT,
+  BUILDS_DIR_DEFAULT,
   SANDBOX_CONTAINER_NAME,
   SOURCE_REPO_DEFAULT,
 } from "./types.js";
 
+const log = createLogger("deploy-tool");
+
 export function createDeployTool(cfg: DevOpsConfig) {
   const autoRollbackSeconds = cfg.autoRollbackSeconds ?? AUTO_ROLLBACK_SECONDS_DEFAULT;
   const sourceRepo = cfg.sourceRepo ?? SOURCE_REPO_DEFAULT;
+  const buildsDir = cfg.buildsDir ?? BUILDS_DIR_DEFAULT;
 
   return {
     name: "devops_deploy",
     label: "DevOps Deploy",
     description: [
       "Promote a tested build dir to production or rollback to the previous version.",
-      "SAFE: uses atomic symlink swap — the running process is never touched mid-flight.",
+      "CHAT-SAFE: promote uses a deferred restart (gateway restarts 5s AFTER returning the response to you,",
+      "  so this message is guaranteed to be delivered before the restart).",
+      "LOGGING: all actions are logged to /root/.openclaw-devops/deploy.log.",
+      "AUTO-CLEANUP: on successful promote only the active + previous build dirs are kept.",
       "Actions:",
-      "status — show production symlink target, git log, and gateway health.",
-      "promote — swap symlink to new build dir, restart gateway, watchdog verifies health.",
-      "          Fails gracefully: reverts symlink + restarts if health check fails.",
-      "rollback — swap symlink back to previous build dir and restart gateway.",
-      "cleanup — remove old build dirs keeping last 3.",
-      "tag — create a git tag in the source repo at current HEAD.",
+      "status   — production symlink, git log, gateway port, last deploy result.",
+      "promote  — swap symlink, schedule deferred restart + watchdog (chat-safe).",
+      "rollback — swap symlink back to previous build dir + restart.",
+      "logs     — tail last 80 lines of the deploy log.",
+      "cleanup  — delete all build dirs except active + previous.",
+      "tag      — create a git snapshot tag in the source repo.",
     ].join(" "),
     parameters: Type.Object({
       action: Type.String({
-        description: "One of: status | promote | rollback | cleanup | tag",
+        description: "One of: status | promote | rollback | logs | cleanup | tag",
       }),
       buildDir: Type.Optional(Type.String({
-        description: "Build dir to promote (for action=promote). Uses last sandbox dir if omitted.",
+        description: "Build dir to promote (action=promote). Uses last sandbox dir if omitted.",
       })),
       tagName: Type.Optional(Type.String({
         description: "Tag name for action=tag. Auto-generated if omitted.",
       })),
       force: Type.Optional(Type.Boolean({
-        description: "Skip health-check confirmation for promote (not recommended).",
+        description: "For promote: skip deferred restart, restart immediately (not safe from chat).",
       })),
     }),
     execute: async (_toolCallId: string, params: unknown) => {
@@ -52,28 +67,32 @@ export function createDeployTool(cfg: DevOpsConfig) {
         tagName?: string;
         force?: boolean;
       };
+      log.info(`execute action=${p.action}`);
 
       switch (p.action?.trim()) {
         case "status":
           return deployStatus(cfg, sourceRepo);
         case "promote":
-          return deployPromote(cfg, p.buildDir, autoRollbackSeconds, p.force ?? false);
+          return deployPromote(cfg, p.buildDir, autoRollbackSeconds, p.force ?? false, buildsDir);
         case "rollback":
           return deployRollback(cfg);
+        case "logs":
+          return deployLogs();
         case "cleanup":
           return deployCleanup(cfg);
         case "tag":
           return deployTag(sourceRepo, p.tagName);
         default:
-          return errResult(`Unknown action '${p.action}'. Use: status | promote | rollback | cleanup | tag`);
+          return errResult(`Unknown action '${p.action}'. Use: status | promote | rollback | logs | cleanup | tag`);
       }
     },
   };
 }
 
-// ── actions ───────────────────────────────────────────────────────────────────
+// ── status ────────────────────────────────────────────────────────────────────
 
 async function deployStatus(cfg: DevOpsConfig, sourceRepo: string) {
+  log.info("status check");
   const state = readDeployState();
   const symlink = cfg.globalSymlink ?? "/usr/lib/node_modules/openclaw";
 
@@ -83,21 +102,33 @@ async function deployStatus(cfg: DevOpsConfig, sourceRepo: string) {
     runShell("ss -ltnp | grep 18789 | head -2", { timeoutMs: 5000 }),
   ]);
 
+  // Last watchdog result
+  let lastResult = "(no deploy recorded yet)";
+  try {
+    const raw = fs.readFileSync(DEVOPS_LAST_RESULT_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as { ts: string; ok: boolean; message: string };
+    lastResult = `[${parsed.ts}] ${parsed.ok ? "✅" : "❌"} ${parsed.message}`;
+  } catch {
+    // fine
+  }
+
   const lines = [
     "=== Production Deploy Status ===",
-    `Symlink (${symlink}):`,
-    `  → ${symlinkTarget.stdout || "(not a symlink or not found)"}`,
+    `Symlink:  ${symlink}`,
+    `  → ${symlinkTarget.stdout || "(not found)"}`,
     "",
-    `Deploy state:`,
-    `  active:   ${state.activeDir ?? "(unmanaged)"}`,
+    `State:`,
+    `  active:   ${state.activeDir ?? "(unmanaged — initial install)"}`,
     `  previous: ${state.previousDir ?? "(none)"}`,
-    `  sandbox:  ${state.sandboxDir ?? "(none)"}`,
+    `  sandbox:  ${state.sandboxDir ?? "(none — run devops_sandbox create)"}`,
     "",
-    `Source repo (${sourceRepo}) git log:`,
+    `Source repo git log (${sourceRepo}):`,
     gitLog.stdout || gitLog.stderr,
     "",
-    `Gateway port 18789:`,
-    gwPort.stdout || "not listening",
+    `Gateway port 18789: ${gwPort.stdout || "NOT LISTENING"}`,
+    "",
+    `Last deploy result: ${lastResult}`,
+    `Full logs: ${DEVOPS_LOG_FILE}`,
   ];
 
   return {
@@ -106,154 +137,381 @@ async function deployStatus(cfg: DevOpsConfig, sourceRepo: string) {
   };
 }
 
+// ── promote ───────────────────────────────────────────────────────────────────
+
 async function deployPromote(
   cfg: DevOpsConfig,
   buildDirPath: string | undefined,
   autoRollbackSeconds: number,
   force: boolean,
+  buildsDir: string,
 ) {
   const steps: string[] = [];
+  const step = (msg: string) => {
+    steps.push(msg);
+    log.info(msg);
+  };
 
-  // Resolve the build dir to promote
+  step("=== PROMOTE START ===");
+
+  // Resolve build dir
   const state = readDeployState();
   const targetDir = buildDirPath ?? state.sandboxDir;
   if (!targetDir) {
-    return errResult("No buildDir specified and no sandbox dir in state. Run devops_sandbox(create) first.");
+    const msg = "No buildDir specified and no sandbox dir in state. Run devops_sandbox(create) first.";
+    log.error(msg);
+    return errResult(msg);
   }
-  steps.push(`Promoting: ${targetDir}`);
+  step(`Target build dir: ${targetDir}`);
 
-  // Verify the build dir has dist/entry.js (was built)
+  // Verify dist/entry.js exists
   const distCheck = await runShell(`ls ${targetDir}/dist/entry.js`, { timeoutMs: 5000 });
   if (!distCheck.ok) {
-    return errResult(`Build dir ${targetDir} has no dist/entry.js — run devops_sandbox(build) first.`);
+    const msg = `Build dir has no dist/entry.js — run devops_sandbox(build, buildDir="${targetDir}") first.`;
+    log.error(msg);
+    return errResult(msg);
   }
-  steps.push("✅ Build artifacts verified (dist/entry.js exists)");
+  step("✅ dist/entry.js verified");
 
-  // Read current symlink target before swapping (for rollback)
-  const { ok: swapOk, oldTarget, log: swapLog } = await atomicSwapSymlink(cfg, targetDir);
-  steps.push(swapLog);
+  // Read current symlink for rollback reference
+  const symlink = cfg.globalSymlink ?? "/usr/lib/node_modules/openclaw";
+  const currentSymlink = await runShell(`readlink -f ${symlink}`, { timeoutMs: 5000 });
+  const previousDir = state.activeDir ?? (currentSymlink.ok ? currentSymlink.stdout.trim() : null);
+  step(`Previous dir: ${previousDir ?? "(none)"}`);
+
+  // Atomic symlink swap
+  const { ok: swapOk, log: swapLog } = await atomicSwapSymlink(cfg, targetDir);
+  step(swapLog);
   if (!swapOk) {
+    log.error("symlink swap failed", { targetDir });
     return errResult(`Symlink swap failed.\n${steps.join("\n")}`);
   }
+  step("✅ Symlink swapped atomically");
 
-  // Update deploy state
+  // Persist deploy state
   const newState = {
     activeDir: targetDir,
-    previousDir: state.activeDir ?? oldTarget,
+    previousDir: previousDir,
     sandboxDir: state.sandboxDir,
     updatedAt: Date.now(),
   };
   writeDeployState(newState);
-  steps.push(`Deploy state saved. Previous: ${newState.previousDir}`);
+  step(`Deploy state saved`);
 
-  // Tag the source repo at current HEAD for audit trail
+  // Tag source repo
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
   const sourceRepo = cfg.sourceRepo ?? SOURCE_REPO_DEFAULT;
   await runShell(`git tag promoted-${ts} 2>/dev/null || true`, { cwd: sourceRepo, timeoutMs: 5000 });
-  steps.push(`Tagged source repo: promoted-${ts}`);
-
-  // Restart gateway
-  const restartResult = await runShell("systemctl restart openclaw-gateway", { timeoutMs: 15_000 });
-  steps.push(restartResult.ok ? "✅ Gateway restarting..." : `⚠️ Restart: ${restartResult.stderr.slice(0, 100)}`);
+  step(`Source repo tagged: promoted-${ts}`);
 
   if (force) {
-    steps.push("⚠️ force=true: skipping health check");
-    return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: true, activeDir: targetDir } };
+    // Immediate restart (not safe from chat context — user explicitly opted in)
+    step("⚠️ force=true: restarting immediately (not chat-safe)");
+    await runShell("systemctl restart openclaw-gateway", { timeoutMs: 15_000 });
+    step("Gateway restarting...");
+    return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: true } };
   }
 
-  // Watchdog
-  steps.push(`Waiting up to ${autoRollbackSeconds}s for gateway health...`);
-  const healthy = await waitForGateway(autoRollbackSeconds * 1000);
+  // CHAT-SAFE: generate + launch a self-contained watchdog bash script,
+  // then schedule the restart to happen 5s AFTER we return this response.
+  // The watchdog checks health and auto-rolls back if the gateway doesn't come up.
+  const watchdogPath = await writeWatchdogScript({
+    targetDir,
+    previousDir,
+    symlink,
+    autoRollbackSeconds,
+    buildsDir,
+    sourceRepo,
+  });
+  step(`Watchdog script written: ${watchdogPath}`);
 
-  if (healthy) {
-    // Clean up sandbox container
-    await runShell(`docker rm -f ${SANDBOX_CONTAINER_NAME} 2>/dev/null || true`, { timeoutMs: 10_000 });
-    steps.push("✅ Gateway healthy — promotion complete!");
-    steps.push("Sandbox container cleaned up.");
-    return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: true, activeDir: targetDir } };
-  }
+  // Launch watchdog in background (nohup, fully detached from this process)
+  const launchResult = await runShell(
+    `nohup bash ${watchdogPath} >> ${DEVOPS_LOG_FILE} 2>&1 &`,
+    { timeoutMs: 5000 },
+  );
+  step(launchResult.ok ? "✅ Watchdog launched (background)" : `⚠️ Watchdog launch: ${launchResult.stderr}`);
 
-  // Auto-rollback
-  steps.push(`❌ Gateway not healthy after ${autoRollbackSeconds}s — AUTO ROLLBACK`);
-  const rbSteps = await doRollback(cfg);
-  steps.push(...rbSteps);
+  // Schedule deferred restart (5s delay — allows this response to be delivered first)
+  const deferredResult = await runShell(
+    `nohup bash -c "sleep 5 && systemctl restart openclaw-gateway" >> ${DEVOPS_LOG_FILE} 2>&1 &`,
+    { timeoutMs: 5000 },
+  );
+  step(deferredResult.ok
+    ? "✅ Deferred restart scheduled (gateway will restart in ~5 seconds)"
+    : `⚠️ Deferred restart: ${deferredResult.stderr}`);
 
-  return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: false } };
-}
+  steps.push("");
+  steps.push("┌─────────────────────────────────────────────────────────────┐");
+  steps.push("│  🚀 PROMOTE INITIATED — this response will be delivered     │");
+  steps.push("│  before the gateway restarts in ~5 seconds.                 │");
+  steps.push("│  Watchdog will auto-rollback if health check fails.         │");
+  steps.push(`│  Check result: devops_deploy(status) after ~${autoRollbackSeconds + 10}s           │`);
+  steps.push(`│  Live logs:    devops_deploy(logs)                          │`);
+  steps.push("└─────────────────────────────────────────────────────────────┘");
 
-async function deployRollback(cfg: DevOpsConfig) {
-  const steps = await doRollback(cfg);
-  const ok = steps.some((s) => s.includes("✅"));
   return {
     content: [{ type: "text" as const, text: steps.join("\n") }],
-    details: { ok },
+    details: { ok: true, activeDir: targetDir, watchdog: watchdogPath },
   };
 }
 
-async function doRollback(cfg: DevOpsConfig): Promise<string[]> {
-  const steps: string[] = ["=== ROLLBACK ==="];
-  const state = readDeployState();
+// ── watchdog script generation ────────────────────────────────────────────────
 
+async function writeWatchdogScript(opts: {
+  targetDir: string;
+  previousDir: string | null;
+  symlink: string;
+  autoRollbackSeconds: number;
+  buildsDir: string;
+  sourceRepo: string;
+}): Promise<string> {
+  const scriptPath = path.join(os.tmpdir(), `openclaw-watchdog-${Date.now()}.sh`);
+  const stateFile = DEVOPS_LOG_FILE.replace("/deploy.log", "/deploy-state.json");
+  const resultFile = DEVOPS_LAST_RESULT_FILE;
+
+  const script = `#!/usr/bin/env bash
+# OpenClaw deploy watchdog — auto-generated, do not edit
+# Target: ${opts.targetDir}
+# Previous: ${opts.previousDir ?? "none"}
+set -euo pipefail
+
+TARGET_DIR="${opts.targetDir}"
+PREV_DIR="${opts.previousDir ?? ""}"
+SYMLINK="${opts.symlink}"
+RESULT_FILE="${resultFile}"
+BUILDS_DIR="${opts.buildsDir}"
+MAX_WAIT_SECS="${opts.autoRollbackSeconds}"
+
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+log()  { echo "[\$(ts)] [INFO ] [watchdog] $*"; }
+logw() { echo "[\$(ts)] [WARN ] [watchdog] $*"; }
+loge() { echo "[\$(ts)] [ERROR] [watchdog] $*"; }
+
+save_result() {
+  local ok="$1" msg="$2"
+  echo "{\\"ts\\":\\"\$(ts)\\",\\"ok\\":${ok},\\"message\\":\\"${msg}\\"}" > "$RESULT_FILE" 2>/dev/null || true
+}
+
+log "=== WATCHDOG STARTED (pid $$) ==="
+log "Target dir : $TARGET_DIR"
+log "Previous   : \${PREV_DIR:-none}"
+log "Symlink    : $SYMLINK"
+log "Max wait   : ${opts.autoRollbackSeconds}s"
+
+# Give the deferred restart time to fire
+sleep 8
+
+# Poll for gateway health
+log "Polling port 18789 (max ${opts.autoRollbackSeconds}s)..."
+waited=0
+healthy=false
+while [ "$waited" -lt "$MAX_WAIT_SECS" ]; do
+  if ss -ltnp 2>/dev/null | grep -q "18789"; then
+    log "Port 18789 is listening — gateway healthy (waited \${waited}s)"
+    healthy=true
+    break
+  fi
+  if journalctl -u openclaw-gateway -n 3 --no-pager 2>/dev/null | grep -q "listening on"; then
+    log "Journal shows 'listening on' — gateway healthy (waited \${waited}s)"
+    healthy=true
+    break
+  fi
+  log "Not ready yet (\${waited}s elapsed)..."
+  sleep 4
+  waited=$((waited + 4))
+done
+
+if [ "$healthy" = "true" ]; then
+  log "=== DEPLOY SUCCESSFUL ==="
+  save_result "true" "promote to $TARGET_DIR succeeded"
+
+  # Auto-cleanup: keep only active + previous, remove everything else
+  log "Running auto-cleanup (keeping active + previous)..."
+  if [ -d "$BUILDS_DIR" ]; then
+    active_real="$(realpath "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")"
+    prev_real="$(realpath "$PREV_DIR" 2>/dev/null || echo "$PREV_DIR")"
+    for d in "$BUILDS_DIR"/*/; do
+      d_real="$(realpath "$d" 2>/dev/null || echo "$d")"
+      if [ "$d_real" = "$active_real" ] || [ "$d_real" = "$prev_real" ]; then
+        log "Keeping: $d"
+      else
+        log "Removing old build dir: $d"
+        rm -rf "$d" || logw "Failed to remove $d"
+      fi
+    done
+  fi
+
+  # Clean up sandbox Docker container if running
+  docker rm -f openclaw-sandbox 2>/dev/null && log "Sandbox container cleaned up" || true
+
+  log "=== WATCHDOG DONE (success) ==="
+  exit 0
+fi
+
+# === AUTO-ROLLBACK ===
+loge "Gateway not healthy after \${MAX_WAIT_SECS}s — initiating AUTO ROLLBACK"
+
+if [ -z "$PREV_DIR" ] || [ ! -f "$PREV_DIR/dist/entry.js" ]; then
+  loge "No valid previous dir for rollback (\${PREV_DIR:-empty})"
+  save_result "false" "promote failed + no rollback target"
+  exit 1
+fi
+
+log "Swapping symlink back: $PREV_DIR"
+ln -sfn "$PREV_DIR" "$SYMLINK"
+log "Symlink reverted to $PREV_DIR"
+
+log "Restarting gateway with previous version..."
+systemctl restart openclaw-gateway
+
+# Wait for rollback gateway
+rb_waited=0
+rb_healthy=false
+while [ "$rb_waited" -lt 40 ]; do
+  if ss -ltnp 2>/dev/null | grep -q "18789"; then
+    log "Rollback gateway healthy (waited \${rb_waited}s)"
+    rb_healthy=true
+    break
+  fi
+  sleep 4
+  rb_waited=$((rb_waited + 4))
+done
+
+if [ "$rb_healthy" = "true" ]; then
+  log "=== ROLLBACK SUCCESSFUL === active: $PREV_DIR"
+  save_result "false" "promote failed — rolled back to $PREV_DIR successfully"
+else
+  loge "=== ROLLBACK ALSO FAILED === manual intervention required"
+  loge "  Symlink: $SYMLINK → $PREV_DIR (already restored)"
+  loge "  Try: systemctl restart openclaw-gateway"
+  save_result "false" "promote AND rollback failed — manual intervention required"
+fi
+
+log "=== WATCHDOG DONE (rollback path) ==="
+exit 1
+`;
+
+  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+// ── rollback ──────────────────────────────────────────────────────────────────
+
+async function deployRollback(cfg: DevOpsConfig) {
+  const steps: string[] = [];
+  const step = (msg: string) => { steps.push(msg); log.info(msg); };
+
+  step("=== MANUAL ROLLBACK ===");
+  const state = readDeployState();
   const rollbackTarget = state.previousDir;
+
   if (!rollbackTarget) {
-    steps.push("❌ No previous build dir recorded in state — cannot auto-rollback.");
-    steps.push("You can manually run: ln -sfn <old-dir> /usr/lib/node_modules/openclaw && systemctl restart openclaw-gateway");
-    return steps;
+    const msg = "No previous build dir in state. Cannot rollback automatically.";
+    log.error(msg);
+    return errResult(msg);
   }
 
-  steps.push(`Rolling back to: ${rollbackTarget}`);
-
-  // Verify rollback target still exists and has dist
   const distCheck = await runShell(`ls ${rollbackTarget}/dist/entry.js`, { timeoutMs: 5000 });
   if (!distCheck.ok) {
-    steps.push(`❌ Rollback target ${rollbackTarget} has no dist/entry.js`);
-    return steps;
+    const msg = `Previous dir ${rollbackTarget} has no dist/entry.js.`;
+    log.error(msg);
+    return errResult(msg);
   }
+  step(`Rolling back to: ${rollbackTarget}`);
 
   const { ok: swapOk, log: swapLog } = await atomicSwapSymlink(cfg, rollbackTarget);
-  steps.push(swapLog);
-  if (!swapOk) {
-    return steps;
-  }
+  step(swapLog);
+  if (!swapOk) return errResult(steps.join("\n"));
 
   // Update state
-  const currentActive = state.activeDir;
   writeDeployState({
     ...state,
     activeDir: rollbackTarget,
-    previousDir: currentActive,
+    previousDir: state.activeDir,
     updatedAt: Date.now(),
   });
 
-  const restartResult = await runShell("systemctl restart openclaw-gateway", { timeoutMs: 15_000 });
-  steps.push(restartResult.ok ? "✅ Gateway restarting..." : `Restart: ${restartResult.stderr.slice(0, 100)}`);
+  // Deferred restart (same chat-safe pattern)
+  const launchResult = await runShell(
+    `nohup bash -c "sleep 5 && systemctl restart openclaw-gateway" >> ${DEVOPS_LOG_FILE} 2>&1 &`,
+    { timeoutMs: 5000 },
+  );
+  step(launchResult.ok ? "✅ Deferred restart scheduled (~5s)" : `Restart: ${launchResult.stderr}`);
 
-  const healthy = await waitForGateway(40_000);
-  steps.push(healthy ? "✅ Rollback complete — gateway healthy!" : "⚠️ Gateway may still be starting, check manually.");
+  step("");
+  step("✅ Rollback initiated — gateway will restart in ~5 seconds.");
+  step(`Check: devops_deploy(status) after ~30s`);
 
-  return steps;
+  return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: true } };
 }
 
-async function deployCleanup(cfg: DevOpsConfig) {
-  await pruneOldBuilds(cfg, 3);
-  const state = readDeployState();
+// ── logs ──────────────────────────────────────────────────────────────────────
+
+function deployLogs() {
+  const lines = readRecentLogs(80);
   return {
-    content: [{
-      type: "text" as const,
-      text: `Cleaned up old build dirs (kept last 3).\nActive: ${state.activeDir}\nPrevious: ${state.previousDir}`,
-    }],
-    details: { ok: true },
+    content: [{ type: "text" as const, text: `=== Deploy Log (last 80 lines) ===\n${lines}` }],
+    details: { ok: true, logFile: DEVOPS_LOG_FILE },
   };
 }
+
+// ── cleanup ───────────────────────────────────────────────────────────────────
+
+async function deployCleanup(cfg: DevOpsConfig) {
+  const buildsDir = cfg.buildsDir ?? BUILDS_DIR_DEFAULT;
+  const state = readDeployState();
+  log.info("manual cleanup", { active: state.activeDir, previous: state.previousDir });
+
+  const steps: string[] = ["=== CLEANUP ==="];
+
+  let entries: string[] = [];
+  try {
+    const { readdirSync, statSync } = await import("node:fs");
+    entries = readdirSync(buildsDir)
+      .map((n) => path.join(buildsDir, n))
+      .filter((p) => { try { return statSync(p).isDirectory(); } catch { return false; } });
+  } catch {
+    return errResult(`Cannot read builds dir: ${buildsDir}`);
+  }
+
+  const keep = new Set([state.activeDir, state.previousDir].filter(Boolean));
+  let removed = 0;
+
+  for (const dir of entries) {
+    const realDir = fs.realpathSync(dir);
+    if (keep.has(dir) || keep.has(realDir)) {
+      steps.push(`KEEP   ${dir}`);
+    } else {
+      const result = await runShell(`rm -rf ${dir}`, { timeoutMs: 30_000 });
+      if (result.ok) {
+        steps.push(`REMOVE ${dir} ✅`);
+        removed++;
+      } else {
+        steps.push(`REMOVE ${dir} ❌ ${result.stderr.slice(0, 100)}`);
+      }
+    }
+  }
+
+  steps.push(`\nDone: removed ${removed}, kept ${keep.size} (active + previous).`);
+  log.info(`cleanup done`, { removed, kept: keep.size });
+
+  return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: true, removed } };
+}
+
+// ── tag ───────────────────────────────────────────────────────────────────────
 
 async function deployTag(sourceRepo: string, tagName?: string) {
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
   const tag = tagName ?? `snapshot-${ts}`;
+  log.info(`tagging source repo: ${tag}`);
   const result = await runShell(`git tag ${tag}`, { cwd: sourceRepo, timeoutMs: 10_000 });
   return {
     content: [{
       type: "text" as const,
-      text: result.ok ? `✅ Tagged source repo HEAD as '${tag}'` : `❌ Tagging failed\n${formatResult(result)}`,
+      text: result.ok
+        ? `✅ Tagged source repo HEAD as '${tag}'`
+        : `❌ Tagging failed\n${formatResult(result)}`,
     }],
     details: { ok: result.ok, tag },
   };
@@ -261,26 +519,8 @@ async function deployTag(sourceRepo: string, tagName?: string) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-async function waitForGateway(maxMs: number): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < maxMs) {
-    await new Promise((r) => setTimeout(r, 4000));
-    const logs = await runShell(
-      "journalctl -u openclaw-gateway -n 5 --no-pager 2>/dev/null",
-      { timeoutMs: 5000 },
-    );
-    if (logs.stdout.includes("listening on")) {
-      return true;
-    }
-    const port = await runShell("ss -ltnp | grep 18789", { timeoutMs: 3000 });
-    if (port.ok && port.stdout.includes("18789")) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function errResult(message: string) {
+  log.error(message);
   return {
     content: [{ type: "text" as const, text: `devops_deploy error: ${message}` }],
     details: { ok: false, error: message },

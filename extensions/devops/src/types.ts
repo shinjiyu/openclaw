@@ -31,9 +31,6 @@ export const AUTO_ROLLBACK_SECONDS_DEFAULT = 40;
 export const SANDBOX_CONTAINER_NAME = "openclaw-sandbox";
 export const SANDBOX_IMAGE_TAG = "openclaw:sandbox";
 
-/** State file tracking the active build dir (atomic deploy state). */
-export const DEPLOY_STATE_FILE = "/root/.openclaw-devops-state.json";
-
 /** Commands allowed in shell_exec (first word match). */
 export const ALLOWED_COMMAND_PREFIXES = [
   "git",

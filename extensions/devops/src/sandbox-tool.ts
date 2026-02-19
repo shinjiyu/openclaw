@@ -1,11 +1,12 @@
 import { Type } from "@sinclair/typebox";
 import {
-  buildDir,
+  compileBuildDir,
   createBuildDir,
   installBuildDir,
   readDeployState,
   writeDeployState,
 } from "./build-dir.js";
+import { createLogger } from "./logger.js";
 import { formatResult, runShell } from "./run.js";
 import type { DevOpsConfig } from "./types.js";
 import {
@@ -14,6 +15,8 @@ import {
   SANDBOX_IMAGE_TAG,
   SANDBOX_PORT_DEFAULT,
 } from "./types.js";
+
+const log = createLogger("sandbox");
 
 export function createSandboxTool(cfg: DevOpsConfig) {
   const sandboxPort = cfg.sandboxPort ?? SANDBOX_PORT_DEFAULT;
@@ -61,6 +64,7 @@ export function createSandboxTool(cfg: DevOpsConfig) {
         timeoutSeconds?: number;
       };
 
+      log.info(`action=${p.action}`, { buildDir: p.buildDir });
       switch (p.action?.trim()) {
         case "create":
           return sandboxCreate(cfg, p.label, p.timeoutSeconds);
@@ -101,7 +105,8 @@ async function sandboxCreate(cfg: DevOpsConfig, label?: string, timeoutSeconds?:
   const { ok: installOk, log: installLog } = await installBuildDir(dir);
   steps.push(installLog);
   if (!installOk) {
-    steps.push("⚠️ Dependency install had issues — build may still work if they are optional native deps");
+    log.warn("dep install had issues", { dir });
+    steps.push("⚠️ Dependency install had issues — may be non-fatal (optional native deps)");
   }
 
   // Save sandbox dir in deploy state so other actions can find it
@@ -109,10 +114,14 @@ async function sandboxCreate(cfg: DevOpsConfig, label?: string, timeoutSeconds?:
   writeDeployState({ ...state, sandboxDir: dir, updatedAt: Date.now() });
 
   steps.push(`\n✅ Isolated build dir ready: ${dir}`);
-  steps.push(`\nStep 3/3: You can now:`);
-  steps.push(`  • Modify source files using shell_exec with cwd="${dir}/src/..."`);
-  steps.push(`  • Run devops_sandbox(build, buildDir="${dir}") to compile + build Docker image`);
-  steps.push(`  • Run devops_sandbox(start, buildDir="${dir}") to launch sandbox on port 18790`);
+  steps.push(`\nNext steps:`);
+  steps.push(`  1. Modify source files: shell_exec(cwd="${dir}/src/...")`);
+  steps.push(`  2. Build Docker image: devops_sandbox(build, buildDir="${dir}")`);
+  steps.push(`  3. Start sandbox:      devops_sandbox(start, buildDir="${dir}")`);
+  steps.push(`  4. Health check:       devops_sandbox(health)`);
+  steps.push(`  5. Run tests:          devops_sandbox(test)`);
+  steps.push(`  6. Promote:            devops_deploy(promote, buildDir="${dir}")`);
+  steps.push(`\nAll logs: devops_deploy(logs)`);
 
   return {
     content: [{ type: "text" as const, text: steps.join("\n") }],
@@ -126,22 +135,42 @@ async function sandboxBuild(buildDirPath: string | undefined, timeoutSeconds?: n
     return errResult("buildDir required (or run action=create first)");
   }
   const timeoutMs = (timeoutSeconds ?? 600) * 1000;
-  const steps: string[] = [`Building Docker image from: ${dir}`];
+  const steps: string[] = [`Building from: ${dir}`];
+  log.info("sandbox build start", { dir });
 
-  // Build the image from the build dir
+  // Step 1: TypeScript compile (pnpm build) inside the build dir
+  steps.push("\nStep 1/2: TypeScript compile (pnpm build)...");
+  const { ok: compileOk, log: compileLog } = await compileBuildDir(dir);
+  steps.push(compileLog);
+  if (!compileOk) {
+    log.error("pnpm build failed", { dir });
+    return {
+      content: [{ type: "text" as const, text: `❌ TypeScript build failed\n${steps.join("\n")}` }],
+      details: { ok: false, buildDir: dir },
+    };
+  }
+  steps.push("✅ TypeScript build complete");
+
+  // Step 2: Docker image build
+  steps.push("\nStep 2/2: Docker image build...");
   const result = await runShell(
     `docker build -t ${SANDBOX_IMAGE_TAG} ${dir}`,
     { cwd: dir, timeoutMs },
   );
-  const text = formatResult(result, "docker build");
-  steps.push(text);
+  steps.push(formatResult(result, "docker build").slice(0, 1500));
+
+  if (!result.ok) {
+    log.error("docker build failed", { dir, exitCode: result.exitCode });
+  } else {
+    log.info("sandbox image built", { dir, durationMs: result.durationMs });
+  }
 
   return {
     content: [{
       type: "text" as const,
       text: result.ok
         ? `✅ Sandbox image built: ${SANDBOX_IMAGE_TAG}\n${steps.join("\n")}`
-        : `❌ Build failed\n${steps.join("\n")}`,
+        : `❌ Docker build failed\n${steps.join("\n")}`,
     }],
     details: { ok: result.ok, buildDir: dir },
   };
@@ -158,6 +187,7 @@ async function sandboxStart(
     return errResult("buildDir required (or run action=create first)");
   }
   const timeoutMs = (timeoutSeconds ?? 60) * 1000;
+  log.info("sandbox start", { dir, sandboxPort });
 
   await runShell(`mkdir -p ${sandboxConfigDir}`, { timeoutMs: 5000 });
   await runShell(`docker rm -f ${SANDBOX_CONTAINER_NAME} 2>/dev/null || true`, { timeoutMs: 10_000 });
@@ -175,6 +205,9 @@ async function sandboxStart(
 
   const result = await runShell(runCmd, { cwd: dir, timeoutMs });
 
+  if (!result.ok) log.error("sandbox start failed", { exitCode: result.exitCode });
+  else log.info("sandbox container started", { sandboxPort });
+
   return {
     content: [{
       type: "text" as const,
@@ -189,25 +222,34 @@ async function sandboxStart(
 async function sandboxHealth(sandboxPort: number, timeoutSeconds?: number) {
   const maxWaitMs = (timeoutSeconds ?? 40) * 1000;
   const start = Date.now();
+  log.info("health poll start", { sandboxPort, maxWaitSecs: maxWaitMs / 1000 });
 
   while (Date.now() - start < maxWaitMs) {
-    const logs = await runShell(`docker logs --tail 15 ${SANDBOX_CONTAINER_NAME} 2>&1`, { timeoutMs: 5000 });
-    if (logs.stdout.includes("listening on")) {
+    const elapsed = Date.now() - start;
+    const containerLogs = await runShell(
+      `docker logs --tail 15 ${SANDBOX_CONTAINER_NAME} 2>&1`,
+      { timeoutMs: 5000 },
+    );
+    if (containerLogs.stdout.includes("listening on")) {
+      log.info("sandbox gateway ready", { waitedMs: elapsed });
       return {
-        content: [{ type: "text" as const, text: `✅ Sandbox gateway ready on port ${sandboxPort} (${Date.now() - start}ms)` }],
-        details: { ok: true, waitedMs: Date.now() - start },
+        content: [{ type: "text" as const, text: `✅ Sandbox gateway ready on port ${sandboxPort} (${elapsed}ms)` }],
+        details: { ok: true, waitedMs: elapsed },
       };
     }
-    if (logs.stdout.includes("Error") && logs.stdout.includes("exit")) {
+    if (containerLogs.stdout.toLowerCase().includes("exited") || containerLogs.stdout.includes("Error:")) {
+      log.error("sandbox container crashed", { logs: containerLogs.stdout.slice(-200) });
       return {
-        content: [{ type: "text" as const, text: `❌ Sandbox container crashed:\n${logs.stdout.slice(-500)}` }],
+        content: [{ type: "text" as const, text: `❌ Sandbox container crashed:\n${containerLogs.stdout.slice(-500)}` }],
         details: { ok: false },
       };
     }
+    log.debug(`health: not ready yet (${elapsed}ms elapsed)`);
     await new Promise((r) => setTimeout(r, 3000));
   }
 
-  const finalLogs = await runShell(`docker logs --tail 20 ${SANDBOX_CONTAINER_NAME} 2>&1`, { timeoutMs: 5000 });
+  const finalLogs = await runShell(`docker logs --tail 25 ${SANDBOX_CONTAINER_NAME} 2>&1`, { timeoutMs: 5000 });
+  log.warn("sandbox health timeout", { maxWaitMs });
   return {
     content: [{ type: "text" as const, text: `❌ Sandbox not ready after ${maxWaitMs / 1000}s\nLogs:\n${finalLogs.stdout}` }],
     details: { ok: false },

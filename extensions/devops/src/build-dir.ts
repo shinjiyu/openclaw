@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import { DEVOPS_DEPLOY_STATE_FILE, createLogger } from "./logger.js";
 import { runShell } from "./run.js";
-import { BUILDS_DIR_DEFAULT, DEPLOY_STATE_FILE, SOURCE_REPO_DEFAULT } from "./types.js";
+import { BUILDS_DIR_DEFAULT, SOURCE_REPO_DEFAULT } from "./types.js";
 import type { DevOpsConfig } from "./types.js";
+
+const log = createLogger("build-dir");
 
 export type DeployState = {
   activeDir: string | null;
@@ -13,7 +16,7 @@ export type DeployState = {
 
 export function readDeployState(): DeployState {
   try {
-    const raw = fs.readFileSync(DEPLOY_STATE_FILE, "utf-8");
+    const raw = fs.readFileSync(DEVOPS_DEPLOY_STATE_FILE, "utf-8");
     return JSON.parse(raw) as DeployState;
   } catch {
     return { activeDir: null, previousDir: null, sandboxDir: null, updatedAt: 0 };
@@ -21,14 +24,19 @@ export function readDeployState(): DeployState {
 }
 
 export function writeDeployState(state: DeployState): void {
-  fs.writeFileSync(DEPLOY_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+  fs.mkdirSync(path.dirname(DEVOPS_DEPLOY_STATE_FILE), { recursive: true });
+  fs.writeFileSync(DEVOPS_DEPLOY_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+  log.debug("deploy state saved", { activeDir: state.activeDir, previousDir: state.previousDir });
 }
 
 /**
  * Create a fresh isolated build directory by cloning the source repo locally.
- * Returns the path to the new build dir.
+ * Never modifies the running production source.
  */
-export async function createBuildDir(cfg: DevOpsConfig, label?: string): Promise<{ ok: boolean; buildDir: string; log: string }> {
+export async function createBuildDir(
+  cfg: DevOpsConfig,
+  label?: string,
+): Promise<{ ok: boolean; buildDir: string; log: string }> {
   const sourceRepo = cfg.sourceRepo ?? SOURCE_REPO_DEFAULT;
   const buildsDir = cfg.buildsDir ?? BUILDS_DIR_DEFAULT;
 
@@ -36,46 +44,66 @@ export async function createBuildDir(cfg: DevOpsConfig, label?: string): Promise
   const slug = label ? `-${label.replace(/[^a-z0-9]/gi, "-").slice(0, 20)}` : "";
   const buildDir = path.join(buildsDir, `${ts}${slug}`);
 
-  // Ensure parent exists
+  log.info("creating build dir", { sourceRepo, buildDir });
+
   const mkResult = await runShell(`mkdir -p ${buildsDir}`, { timeoutMs: 5000 });
   if (!mkResult.ok) {
-    return { ok: false, buildDir, log: `mkdir failed: ${mkResult.stderr}` };
+    const msg = `mkdir failed: ${mkResult.stderr}`;
+    log.error(msg);
+    return { ok: false, buildDir, log: msg };
   }
 
-  // Clone from local source repo (fast, shares git objects)
+  // Clone locally (fast — shares git objects, no network needed)
   const cloneResult = await runShell(
     `git clone --local --no-hardlinks ${sourceRepo} ${buildDir}`,
     { cwd: buildsDir, timeoutMs: 60_000 },
   );
   if (!cloneResult.ok) {
-    return { ok: false, buildDir, log: `git clone failed: ${cloneResult.stderr}` };
+    const msg = `git clone failed: ${cloneResult.stderr.slice(0, 300)}`;
+    log.error(msg);
+    return { ok: false, buildDir, log: msg };
   }
 
-  return { ok: true, buildDir, log: `Build dir created: ${buildDir}` };
+  log.info("build dir created", { buildDir, durationMs: cloneResult.durationMs });
+  return { ok: true, buildDir, log: `Build dir created: ${buildDir} (${cloneResult.durationMs}ms)` };
 }
 
 /**
- * Install deps in the build dir (ignore-scripts to avoid native build failures).
+ * Install dependencies inside a build dir.
+ * Uses --ignore-scripts to avoid native build failures (llama-cpp etc.).
  */
 export async function installBuildDir(buildDir: string): Promise<{ ok: boolean; log: string }> {
+  log.info("installing deps", { buildDir });
   const result = await runShell(
     "pnpm install --frozen-lockfile --ignore-scripts",
     { cwd: buildDir, timeoutMs: 300_000 },
   );
-  return { ok: result.ok, log: result.ok ? "deps installed" : result.stderr.slice(0, 500) };
+  if (result.ok) {
+    log.info("deps installed", { buildDir, durationMs: result.durationMs });
+    return { ok: true, log: `deps installed (${result.durationMs}ms)` };
+  }
+  log.warn("dep install issues (may be non-fatal)", { stderr: result.stderr.slice(0, 200) });
+  return { ok: false, log: result.stderr.slice(0, 500) };
 }
 
 /**
- * Build (compile TypeScript + UI) in the build dir.
+ * Build TypeScript + UI inside a build dir.
  */
-export async function buildDir(buildDir: string): Promise<{ ok: boolean; log: string }> {
+export async function compileBuildDir(buildDir: string): Promise<{ ok: boolean; log: string }> {
+  log.info("building", { buildDir });
   const result = await runShell("pnpm build", { cwd: buildDir, timeoutMs: 300_000 });
-  return { ok: result.ok, log: result.ok ? "build complete" : `${result.stdout.slice(-500)}\n${result.stderr.slice(-500)}` };
+  if (result.ok) {
+    log.info("build complete", { buildDir, durationMs: result.durationMs });
+    return { ok: true, log: `build complete (${result.durationMs}ms)` };
+  }
+  const errLog = `${result.stdout.slice(-400)}\n${result.stderr.slice(-400)}`;
+  log.error("build failed", { buildDir, exitCode: result.exitCode });
+  return { ok: false, log: errLog };
 }
 
 /**
- * Atomically swap the global symlink to point to the new build dir.
- * Returns the old target for rollback.
+ * Atomically swap the global npm symlink to point to a new build dir.
+ * Returns the old target so callers can persist it for rollback.
  */
 export async function atomicSwapSymlink(
   cfg: DevOpsConfig,
@@ -83,42 +111,29 @@ export async function atomicSwapSymlink(
 ): Promise<{ ok: boolean; oldTarget: string | null; log: string }> {
   const symlink = cfg.globalSymlink ?? "/usr/lib/node_modules/openclaw";
 
-  // Read current target
   const readResult = await runShell(`readlink -f ${symlink}`, { timeoutMs: 5000 });
   const oldTarget = readResult.ok ? readResult.stdout.trim() : null;
 
-  // Atomic replace: ln -sfn creates new, replaces atomically
+  log.info("swapping symlink", { symlink, from: oldTarget, to: newBuildDir });
+
+  // ln -sfn is atomic on Linux (rename(2) under the hood)
   const swapResult = await runShell(`ln -sfn ${newBuildDir} ${symlink}`, { timeoutMs: 5000 });
   if (!swapResult.ok) {
-    return { ok: false, oldTarget, log: `symlink swap failed: ${swapResult.stderr}` };
+    const msg = `symlink swap failed: ${swapResult.stderr}`;
+    log.error(msg);
+    return { ok: false, oldTarget, log: msg };
   }
 
   // Verify
   const verifyResult = await runShell(`readlink -f ${symlink}`, { timeoutMs: 5000 });
   const newTarget = verifyResult.stdout.trim();
   if (newTarget !== newBuildDir) {
-    return { ok: false, oldTarget, log: `symlink verify failed: expected ${newBuildDir}, got ${newTarget}` };
+    const msg = `symlink verify mismatch: expected ${newBuildDir}, got ${newTarget}`;
+    log.error(msg);
+    return { ok: false, oldTarget, log: msg };
   }
 
-  return { ok: true, oldTarget, log: `Symlink swapped: ${oldTarget ?? "?"} → ${newBuildDir}` };
-}
-
-/**
- * Prune old build dirs, keeping only the last N.
- */
-export async function pruneOldBuilds(cfg: DevOpsConfig, keepCount = 3): Promise<void> {
-  const buildsDir = cfg.buildsDir ?? BUILDS_DIR_DEFAULT;
-  try {
-    const entries = fs.readdirSync(buildsDir)
-      .map((name) => path.join(buildsDir, name))
-      .filter((p) => fs.statSync(p).isDirectory())
-      .sort(); // oldest first (timestamp prefix)
-
-    const toDelete = entries.slice(0, Math.max(0, entries.length - keepCount));
-    for (const dir of toDelete) {
-      await runShell(`rm -rf ${dir}`, { timeoutMs: 30_000 });
-    }
-  } catch {
-    // non-fatal
-  }
+  const msg = `Symlink: ${oldTarget ?? "?"} → ${newBuildDir}`;
+  log.info("symlink swapped", { symlink, oldTarget, newBuildDir });
+  return { ok: true, oldTarget, log: msg };
 }
