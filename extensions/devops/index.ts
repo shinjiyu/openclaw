@@ -1,4 +1,4 @@
-import type { AnyAgentTool, OpenClawPluginApi } from "../../src/plugins/types.js";
+import type { AnyAgentTool, OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { createDeployTool } from "./src/deploy-tool.js";
 import { createSandboxTool } from "./src/sandbox-tool.js";
 import { createShellExecTool } from "./src/shell-exec-tool.js";
