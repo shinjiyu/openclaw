@@ -92,42 +92,23 @@ log "git clone --local --no-hardlinks $ROOT_DIR $BUILD_DIR"
 git clone --local --no-hardlinks "$ROOT_DIR" "$BUILD_DIR"
 ok "Build dir created: $BUILD_DIR"
 
-# ── STEP 2: Install dependencies ──────────────────────────────────────────────
+# ── STEP 2: (skipped on host — Dockerfile handles install + build inside container) ──
 log ""
-log "=== STEP 2/5: Install dependencies ==="
-log "pnpm install --frozen-lockfile --ignore-scripts (in $BUILD_DIR)"
-pnpm --prefix "$BUILD_DIR" install --frozen-lockfile --ignore-scripts \
-  && ok "Dependencies installed" \
-  || logw "Some deps failed (may be native/optional — continuing)"
+log "=== STEP 2/5: Skipping host-side install (Dockerfile builds inside container) ==="
+log "This matches real production: Docker is self-contained."
 
-# ── STEP 3: Build TypeScript + Docker image ───────────────────────────────────
+# ── STEP 3: Docker image build (Dockerfile does full install + compile) ────────
 log ""
-log "=== STEP 3/5: Build (pnpm build + docker build) ==="
+log "=== STEP 3/5: docker build (Dockerfile runs pnpm install + pnpm build) ==="
+log "docker build -t $SANDBOX_IMAGE $BUILD_DIR"
+log "(This may take 3-8 minutes on first run — Bun/pnpm install inside container)"
+docker build --progress=plain -t "$SANDBOX_IMAGE" "$BUILD_DIR" 2>&1 \
+  | grep -E '^(#[0-9]|Step|DONE|ERROR|--->' | head -40 || true
 
-log "pnpm build..."
-pnpm --prefix "$BUILD_DIR" run build \
-  && ok "TypeScript build complete" \
-  || fail "pnpm build failed — check logs above"
-
-# Check if Dockerfile exists
-if [ ! -f "$ROOT_DIR/Dockerfile" ]; then
-  logw "No Dockerfile found in repo root — creating a minimal one for testing"
-  cat > "$BUILD_DIR/Dockerfile" << 'DOCKEREOF'
-FROM node:22-slim
-WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
-RUN npm install -g pnpm && pnpm install --frozen-lockfile --ignore-scripts --prod
-COPY dist/ ./dist/
-EXPOSE 18789
-CMD ["node", "dist/entry.js", "gateway", "run", "--port", "18789", "--bind", "loopback"]
-DOCKEREOF
-  log "Minimal Dockerfile written to build dir"
-fi
-
-log "docker build -t $SANDBOX_IMAGE $BUILD_DIR ..."
+# Re-run without filter just to capture exit code
 docker build -t "$SANDBOX_IMAGE" "$BUILD_DIR" \
   && ok "Docker image built: $SANDBOX_IMAGE" \
-  || fail "docker build failed"
+  || fail "docker build failed — run: docker build -t openclaw:sandbox $BUILD_DIR"
 
 # ── STEP 4: Start sandbox container ───────────────────────────────────────────
 log ""
