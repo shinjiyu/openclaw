@@ -296,6 +296,7 @@ HEALTH_CMD=${JSON.stringify(opts.healthCmd)}
 RESTART_CMD=${JSON.stringify(opts.restartCmd)}
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
+# NOTE: nohup redirects stdout→LOG_FILE already; do NOT use tee here (would double-write)
 log()  { echo "[\$(ts)] [INFO ] [watchdog] $*"; }
 logw() { echo "[\$(ts)] [WARN ] [watchdog] $*"; }
 loge() { echo "[\$(ts)] [ERROR] [watchdog] $*"; }
