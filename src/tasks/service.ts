@@ -73,7 +73,7 @@ export class TaskService {
     const storePath = resolveTaskStorePath(agentId);
     const task = createTask(storePath, { ...input, agentId });
     this.emit({ action: "created", taskId: task.id, task });
-    log.info({ taskId: task.id, agentId }, "task created");
+    log.info("task created", { taskId: task.id, agentId });
     // Wake the worker immediately.
     this.armTimer(100);
     return task;
@@ -136,7 +136,7 @@ export class TaskService {
       try {
         await this.tick();
       } catch (err) {
-        log.error({ err: String(err) }, "task worker tick error");
+        log.error("task worker tick error", { err: String(err) });
       }
     }, delayMs);
   }
@@ -174,7 +174,7 @@ export class TaskService {
     // Mark running.
     updateTask(storePath, task.id, { status: "running", startedAt });
     this.emit({ action: "started", taskId: task.id });
-    log.info({ taskId: task.id, agentId: task.agentId }, "task started");
+    log.info("task started", { taskId: task.id, agentId: task.agentId });
 
     try {
       const fakeJob = buildFakeJob(task);
@@ -212,7 +212,7 @@ export class TaskService {
         durationMs,
         totalTokens: patch.totalTokens,
       });
-      log.info({ taskId: task.id, status: finalStatus, durationMs }, "task finished");
+      log.info("task finished", { taskId: task.id, status: finalStatus, durationMs });
     } catch (err) {
       const durationMs = Date.now() - startedAt;
       const errorMsg = String(err);
@@ -228,7 +228,7 @@ export class TaskService {
         error: errorMsg,
         durationMs,
       });
-      log.error({ taskId: task.id, err: errorMsg, durationMs }, "task execution error");
+      log.error("task execution error", { taskId: task.id, err: errorMsg, durationMs });
     } finally {
       this.running.delete(task.id);
     }

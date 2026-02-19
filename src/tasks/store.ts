@@ -37,7 +37,7 @@ function readStore(storePath: string): TaskStoreFile {
     if ((err as { code?: string }).code === "ENOENT") {
       return { version: 1, tasks: [] };
     }
-    log.warn({ err: String(err), storePath }, "tasks: failed to read store, returning empty");
+    log.warn("tasks: failed to read store, returning empty", { err: String(err), storePath });
     return { version: 1, tasks: [] };
   }
 }

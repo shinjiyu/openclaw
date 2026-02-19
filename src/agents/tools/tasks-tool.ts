@@ -19,7 +19,7 @@ const tasksCreateTool: AnyAgentTool = {
     originChannel: Type.Optional(Type.String({ description: "Channel to send result back to (e.g. feishu, telegram)." })),
     originTo: Type.Optional(Type.String({ description: "Recipient address on originChannel." })),
   }),
-  execute: async (_toolCallId, params) => {
+  execute: async (_toolCallId: string, params: unknown) => {
     const p = params as { message: string; model?: string; thinking?: string; timeoutSeconds?: number; originChannel?: string; originTo?: string };
     const result = await callGatewayTool<{ task: { id: string; status: string } }>("tasks.create", {}, p);
     const task = result?.task;
@@ -46,7 +46,7 @@ const tasksListTool: AnyAgentTool = {
     ),
     limit: Type.Optional(Type.Number({ description: "Max number of tasks to return (default 20)." })),
   }),
-  execute: async (_toolCallId, params) => {
+  execute: async (_toolCallId: string, params: unknown) => {
     const p = params as { status?: string; limit?: number };
     const result = await callGatewayTool<{ tasks: Array<Record<string, unknown>>; activeCount: number }>(
       "tasks.list",
@@ -80,7 +80,7 @@ const tasksStatusTool: AnyAgentTool = {
   parameters: Type.Object({
     id: Type.String({ description: "The task id returned by tasks_create." }),
   }),
-  execute: async (_toolCallId, params) => {
+  execute: async (_toolCallId: string, params: unknown) => {
     const p = params as { id: string };
     const result = await callGatewayTool<{ task: Record<string, unknown> }>("tasks.get", {}, { id: p.id });
     const task = result?.task;
