@@ -1,5 +1,5 @@
+import { TaskService } from "../../tasks/service.js";
 import type { GatewayRequestHandlers } from "./types.js";
-import type { TaskService } from "../../tasks/service.js";
 
 /**
  * Gateway RPC handlers for the task system.
@@ -21,11 +21,12 @@ export const tasksHandlers: GatewayRequestHandlers = {
     };
     const validStatuses = new Set(["queued", "running", "completed", "failed", "cancelled"]);
     const rawStatus = p.status;
-    const status = rawStatus === undefined
-      ? undefined
-      : (Array.isArray(rawStatus) ? rawStatus : [rawStatus]).filter(
-          (s): s is import("../../tasks/types.js").TaskStatus => validStatuses.has(s),
-        );
+    const status =
+      rawStatus === undefined
+        ? undefined
+        : (Array.isArray(rawStatus) ? rawStatus : [rawStatus]).filter(
+            (s): s is import("../../tasks/types.js").TaskStatus => validStatuses.has(s),
+          );
     const tasks = svc.listTasks({
       status,
       limit: typeof p.limit === "number" ? p.limit : 100,
@@ -101,7 +102,11 @@ export const tasksHandlers: GatewayRequestHandlers = {
       return;
     }
     const ok = svc.cancelTask(p.id, p.agentId);
-    respond(ok, { cancelled: ok }, ok ? undefined : { code: "NOT_FOUND", message: `task ${p.id} not found or not cancellable` });
+    respond(
+      ok,
+      { cancelled: ok },
+      ok ? undefined : { code: "NOT_FOUND", message: `task ${p.id} not found or not cancellable` },
+    );
   },
 
   /** Return active task count and a summary of recent tasks. */
@@ -114,20 +119,21 @@ export const tasksHandlers: GatewayRequestHandlers = {
     const running = svc.listTasks({ status: "running", limit: 50 });
     const queued = svc.listTasks({ status: "queued", limit: 50 });
     const recent = svc.listTasks({ status: ["completed", "failed", "cancelled"], limit: 20 });
-    const totalTokens = [...running, ...recent].reduce(
-      (sum, t) => sum + (t.totalTokens ?? 0),
-      0,
+    const totalTokens = [...running, ...recent].reduce((sum, t) => sum + (t.totalTokens ?? 0), 0);
+    respond(
+      true,
+      {
+        activeCount: svc.getActiveCount(),
+        queuedCount: queued.length,
+        runningCount: running.length,
+        recentCount: recent.length,
+        totalTokens,
+        running,
+        queued,
+        recent,
+      },
+      undefined,
     );
-    respond(true, {
-      activeCount: svc.getActiveCount(),
-      queuedCount: queued.length,
-      runningCount: running.length,
-      recentCount: recent.length,
-      totalTokens,
-      running,
-      queued,
-      recent,
-    }, undefined);
   },
 };
 
