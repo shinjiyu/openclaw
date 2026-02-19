@@ -57,6 +57,7 @@ import {
   mergeAlsoAllowPolicy,
   resolveToolProfilePolicy,
 } from "./tool-policy.js";
+import { buildChatModeTaskTools } from "./tools/tasks-tool.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
 
 function isOpenAIProvider(provider?: string) {
@@ -215,7 +216,40 @@ export function createOpenClawCodingTools(options?: {
   disableMessageTool?: boolean;
   /** Whether the sender is an owner (required for owner-only tools). */
   senderIsOwner?: boolean;
+  /**
+   * Chat mode: restrict LLM tools to task management only (tasks_create, tasks_list,
+   * tasks_status). Use for conversational sessions where work is delegated to background tasks.
+   */
+  chatMode?: boolean;
 }): AnyAgentTool[] {
+  // Chat mode: return only task management tools, with hook wrappers applied.
+  // tasks_create is pre-configured with the session key so completions push back to this session.
+  if (options?.chatMode) {
+    const { agentId: chatAgentId } = resolveEffectiveToolPolicy({
+      config: options.config,
+      sessionKey: options.sessionKey,
+      modelProvider: options.modelProvider,
+      modelId: options.modelId,
+    });
+    const chatTaskTools = buildChatModeTaskTools(options.sessionKey);
+    const normalized = chatTaskTools.map((tool) =>
+      normalizeToolParameters(tool, { modelProvider: options.modelProvider }),
+    );
+    const withHooks = normalized.map((tool) =>
+      wrapToolWithBeforeToolCallHook(tool, {
+        agentId: chatAgentId,
+        sessionKey: options.sessionKey,
+        loopDetection: resolveToolLoopDetectionConfig({
+          cfg: options.config,
+          agentId: chatAgentId,
+        }),
+      }),
+    );
+    return options.abortSignal
+      ? withHooks.map((tool) => wrapToolWithAbortSignal(tool, options.abortSignal))
+      : withHooks;
+  }
+
   const execToolName = "exec";
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
   const {

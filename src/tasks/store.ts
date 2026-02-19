@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { Task, TaskCreate, TaskStoreFile } from "./types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import type { Task, TaskCreate, TaskStoreFile } from "./types.js";
 
 const log = createSubsystemLogger("tasks/store");
 
@@ -50,13 +50,18 @@ function writeStore(storePath: string, store: TaskStoreFile) {
 function pruneStore(store: TaskStoreFile): void {
   const now = Date.now();
   const cutoff = now - PRUNE_AGE_MS;
-  const finished = (t: Task) => t.status === "completed" || t.status === "failed" || t.status === "cancelled";
+  const finished = (t: Task) =>
+    t.status === "completed" || t.status === "failed" || t.status === "cancelled";
 
   // Remove very old finished tasks first.
-  store.tasks = store.tasks.filter((t) => !(finished(t) && (t.completedAt ?? t.createdAt) < cutoff));
+  store.tasks = store.tasks.filter(
+    (t) => !(finished(t) && (t.completedAt ?? t.createdAt) < cutoff),
+  );
 
   // Cap finished task count.
-  const finishedTasks = store.tasks.filter(finished).sort((a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt));
+  const finishedTasks = store.tasks
+    .filter(finished)
+    .toSorted((a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt));
   if (finishedTasks.length > MAX_FINISHED_TASKS) {
     const toRemove = new Set(finishedTasks.slice(MAX_FINISHED_TASKS).map((t) => t.id));
     store.tasks = store.tasks.filter((t) => !toRemove.has(t.id));
@@ -124,7 +129,7 @@ export function listTasks(
   }
 
   // Most-recent first.
-  tasks = tasks.slice().sort((a, b) => b.createdAt - a.createdAt);
+  tasks = tasks.slice().toSorted((a, b) => b.createdAt - a.createdAt);
 
   if (opts?.limit && opts.limit > 0) {
     tasks = tasks.slice(0, opts.limit);

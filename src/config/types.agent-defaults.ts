@@ -235,6 +235,12 @@ export type AgentDefaultsConfig = {
      */
     includeReasoning?: boolean;
   };
+  /**
+   * Chat mode: when true, LLM only receives task management tools (tasks_create, tasks_list,
+   * tasks_status). Designed for conversational sessions where heavy tool use is delegated to
+   * background tasks. Applies to non-task sessions only.
+   */
+  chatMode?: boolean;
   /** Max concurrent agent runs across all conversations. Default: 1 (sequential). */
   maxConcurrent?: number;
   /** Sub-agent defaults (spawned via sessions_spawn). */

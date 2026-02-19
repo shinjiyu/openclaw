@@ -1,21 +1,16 @@
+import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import type { CliDeps } from "../cli/deps.js";
 import type { OpenClawConfig } from "../config/config.js";
-import type { Task, TaskCreate, TaskEvent } from "./types.js";
-import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { loadConfig } from "../config/config.js";
-import { loadSessionStore } from "../config/sessions/store.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
+import { loadSessionStore } from "../config/sessions/store.js";
+import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import { resolveFreshSessionTotalTokens } from "../config/sessions/types.js";
 import { runCronIsolatedAgentTurn } from "../cron/isolated-agent.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import {
-  countActiveTasks,
-  createTask,
-  getTask,
-  listTasks,
-  updateTask,
-} from "./store.js";
 import { resolveTaskStorePath } from "./paths.js";
+import { createTask, getTask, listTasks, updateTask } from "./store.js";
+import type { Task, TaskCreate, TaskEvent } from "./types.js";
 
 const log = createSubsystemLogger("tasks/service");
 
@@ -187,6 +182,9 @@ export class TaskService {
         sessionKey,
         agentId: task.agentId,
         lane: "task",
+        onAgentEvent: (evt) => {
+          this.emit({ action: "progress", taskId: task.id, event: evt });
+        },
       });
 
       const durationMs = Date.now() - startedAt;
@@ -213,6 +211,16 @@ export class TaskService {
         totalTokens: patch.totalTokens,
       });
       log.info("task finished", { taskId: task.id, status: finalStatus, durationMs });
+
+      // Push completion summary back to the originating chat session (Option C).
+      if (task.originSessionKey) {
+        void this.pushTaskCompletionToChat(task, {
+          status: finalStatus,
+          result: patch.result,
+          durationMs,
+          totalTokens: patch.totalTokens,
+        });
+      }
     } catch (err) {
       const durationMs = Date.now() - startedAt;
       const errorMsg = String(err);
@@ -229,6 +237,14 @@ export class TaskService {
         durationMs,
       });
       log.error("task execution error", { taskId: task.id, err: errorMsg, durationMs });
+
+      if (task.originSessionKey) {
+        void this.pushTaskCompletionToChat(task, {
+          status: "failed",
+          error: errorMsg,
+          durationMs,
+        });
+      }
     } finally {
       this.running.delete(task.id);
     }
@@ -239,6 +255,57 @@ export class TaskService {
       this.serviceDeps.broadcast("task", evt, { dropIfSlow: false });
     } catch {
       // broadcast errors are non-fatal
+    }
+  }
+
+  /** Append a task completion/failure summary to the originating chat session transcript. */
+  private async pushTaskCompletionToChat(
+    task: Task,
+    outcome: {
+      status: "completed" | "failed";
+      result?: string;
+      error?: string;
+      durationMs?: number;
+      totalTokens?: number;
+    },
+  ): Promise<void> {
+    if (!task.originSessionKey) {
+      return;
+    }
+    try {
+      const durationSec =
+        outcome.durationMs !== undefined ? `${(outcome.durationMs / 1000).toFixed(1)}s` : undefined;
+      const tokenInfo = outcome.totalTokens ? ` · ${outcome.totalTokens} tokens` : "";
+      const durationInfo = durationSec ? ` · ${durationSec}` : "";
+
+      let summaryText: string;
+      if (outcome.status === "completed") {
+        const resultSnippet = outcome.result
+          ? `\n\n${outcome.result.slice(0, 500)}${outcome.result.length > 500 ? "…" : ""}`
+          : "";
+        summaryText = `[Task completed ✓${durationInfo}${tokenInfo}]${resultSnippet}`;
+      } else {
+        const errorSnippet = outcome.error
+          ? `\n\nError: ${String(outcome.error).slice(0, 200)}`
+          : "";
+        summaryText = `[Task failed ✗${durationInfo}${tokenInfo}]${errorSnippet}`;
+      }
+
+      const pushResult = await appendAssistantMessageToSessionTranscript({
+        sessionKey: task.originSessionKey,
+        agentId: task.agentId,
+        text: summaryText,
+      });
+      if (!pushResult.ok) {
+        log.warn("task completion push failed", { taskId: task.id, reason: pushResult.reason });
+      } else {
+        log.info("task completion pushed to chat", {
+          taskId: task.id,
+          sessionKey: task.originSessionKey,
+        });
+      }
+    } catch (err) {
+      log.warn("task completion push error", { taskId: task.id, err: String(err) });
     }
   }
 }
@@ -267,14 +334,15 @@ function buildFakeJob(task: Task) {
       channel: task.originChannel,
       to: task.originTo,
     },
-    delivery: task.originChannel && task.originTo
-      ? {
-          mode: "announce" as const,
-          channel: task.originChannel as import("../cron/types.js").CronMessageChannel,
-          to: task.originTo,
-          bestEffort: true,
-        }
-      : undefined,
+    delivery:
+      task.originChannel && task.originTo
+        ? {
+            mode: "announce" as const,
+            channel: task.originChannel as import("../cron/types.js").CronMessageChannel,
+            to: task.originTo,
+            bestEffort: true,
+          }
+        : undefined,
     state: {},
   };
 }

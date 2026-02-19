@@ -46,8 +46,25 @@ export type TaskStoreFile = {
   tasks: Task[];
 };
 
+/** Fine-grained progress event from a running task's agent execution. */
+export type TaskProgressEvent = {
+  /** Agent event stream name (e.g. "tool", "lifecycle", "assistant"). */
+  stream: string;
+  data: Record<string, unknown>;
+};
+
 export type TaskEvent =
   | { action: "created"; taskId: string; task: Task }
   | { action: "started"; taskId: string }
-  | { action: "finished"; taskId: string; status: "completed" | "failed" | "cancelled"; result?: string; error?: string; durationMs?: number; totalTokens?: number }
-  | { action: "updated"; taskId: string; patch: Partial<Task> };
+  | {
+      action: "finished";
+      taskId: string;
+      status: "completed" | "failed" | "cancelled";
+      result?: string;
+      error?: string;
+      durationMs?: number;
+      totalTokens?: number;
+    }
+  | { action: "updated"; taskId: string; patch: Partial<Task> }
+  /** Granular progress events (LLM call lifecycle, tool call start/end with timing). */
+  | { action: "progress"; taskId: string; event: TaskProgressEvent };

@@ -56,6 +56,11 @@ export type RunEmbeddedPiAgentParams = {
   requireExplicitMessageTarget?: boolean;
   /** If true, omit the message tool from the tool list. */
   disableMessageTool?: boolean;
+  /**
+   * Chat mode: restrict LLM tools to task management only (tasks_create, tasks_list,
+   * tasks_status). Overrides agent config chatMode when explicitly set.
+   */
+  chatMode?: boolean;
   sessionFile: string;
   workspaceDir: string;
   agentDir?: string;

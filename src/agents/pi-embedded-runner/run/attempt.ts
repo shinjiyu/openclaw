@@ -291,6 +291,8 @@ export async function runEmbeddedAttempt(
 
     // Check if the model supports native image input
     const modelHasVision = params.model.input?.includes("image") ?? false;
+    // Resolve chatMode: explicit param takes precedence, then global agent defaults.
+    const resolvedChatMode = params.chatMode ?? params.config?.agents?.defaults?.chatMode ?? false;
     const toolsRaw = params.disableTools
       ? []
       : createOpenClawCodingTools({
@@ -329,6 +331,7 @@ export async function runEmbeddedAttempt(
           requireExplicitMessageTarget:
             params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
           disableMessageTool: params.disableMessageTool,
+          chatMode: resolvedChatMode,
         });
     const tools = sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider });
     logToolSchemasForGoogle({ tools, provider: params.provider });
