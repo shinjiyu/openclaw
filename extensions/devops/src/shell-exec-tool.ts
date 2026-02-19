@@ -3,18 +3,21 @@ import type { DevOpsConfig } from "./types.js";
 import {
   ALLOWED_COMMAND_PREFIXES,
   ALLOWED_CWD_PREFIXES,
+  BUILDS_DIR_DEFAULT,
   MAX_SHELL_TIMEOUT_DEFAULT,
-  PRODUCTION_PATH_DEFAULT,
+  SOURCE_REPO_DEFAULT,
 } from "./types.js";
 import { formatResult, runShell } from "./run.js";
 
 export function createShellExecTool(cfg: DevOpsConfig) {
   const maxTimeout = (cfg.maxShellTimeoutSeconds ?? MAX_SHELL_TIMEOUT_DEFAULT) * 1000;
-  const productionPath = cfg.productionPath ?? PRODUCTION_PATH_DEFAULT;
+  const sourceRepo = cfg.sourceRepo ?? SOURCE_REPO_DEFAULT;
+  const buildsDir = cfg.buildsDir ?? BUILDS_DIR_DEFAULT;
 
   const allowedCwds = [
     ...ALLOWED_CWD_PREFIXES,
-    productionPath,
+    sourceRepo,
+    buildsDir,
   ];
 
   return {
@@ -23,7 +26,7 @@ export function createShellExecTool(cfg: DevOpsConfig) {
     description: [
       "Execute a shell command on the server with safety restrictions.",
       "Allowed commands: git, pnpm, node, docker, systemctl, diff, cat, ls, mkdir, cp, mv, grep, find, journalctl, ss, ps, sed, awk, jq, python3, and more.",
-      "Working directory must be under /root/openclaw-fork, /tmp, or /root/.openclaw-sandbox.",
+      "Working directory must be under /root/openclaw-fork, /root/openclaw-builds/, /tmp, or /root/.openclaw-sandbox.",
       "Use this to read/modify source code, build, run docker, check logs, etc.",
       "Dangerous ops like rm -rf /, writing to /etc, curl|sh are blocked.",
     ].join(" "),

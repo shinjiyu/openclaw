@@ -1,56 +1,71 @@
 import { Type } from "@sinclair/typebox";
+import {
+  atomicSwapSymlink,
+  pruneOldBuilds,
+  readDeployState,
+  writeDeployState,
+} from "./build-dir.js";
 import { formatResult, runShell } from "./run.js";
 import type { DevOpsConfig } from "./types.js";
 import {
   AUTO_ROLLBACK_SECONDS_DEFAULT,
-  PRODUCTION_PATH_DEFAULT,
   SANDBOX_CONTAINER_NAME,
+  SOURCE_REPO_DEFAULT,
 } from "./types.js";
 
 export function createDeployTool(cfg: DevOpsConfig) {
-  const productionPath = cfg.productionPath ?? PRODUCTION_PATH_DEFAULT;
   const autoRollbackSeconds = cfg.autoRollbackSeconds ?? AUTO_ROLLBACK_SECONDS_DEFAULT;
+  const sourceRepo = cfg.sourceRepo ?? SOURCE_REPO_DEFAULT;
 
   return {
     name: "devops_deploy",
     label: "DevOps Deploy",
     description: [
-      "Promote sandbox changes to production or rollback to previous version.",
+      "Promote a tested build dir to production or rollback to the previous version.",
+      "SAFE: uses atomic symlink swap — the running process is never touched mid-flight.",
       "Actions:",
-      "status — show current git HEAD, last deployed tag, and gateway health.",
-      "promote — merge current branch into main, rebuild production, restart gateway with watchdog.",
-      "rollback — revert to last deployed-* git tag and restart gateway.",
-      "tag — create a git tag at current HEAD (use before manual changes).",
+      "status — show production symlink target, git log, and gateway health.",
+      "promote — swap symlink to new build dir, restart gateway, watchdog verifies health.",
+      "          Fails gracefully: reverts symlink + restarts if health check fails.",
+      "rollback — swap symlink back to previous build dir and restart gateway.",
+      "cleanup — remove old build dirs keeping last 3.",
+      "tag — create a git tag in the source repo at current HEAD.",
     ].join(" "),
     parameters: Type.Object({
       action: Type.String({
-        description: "One of: status | promote | rollback | tag",
+        description: "One of: status | promote | rollback | cleanup | tag",
       }),
-      branch: Type.Optional(Type.String({
-        description: "Branch to merge from (for promote). Defaults to current HEAD branch.",
+      buildDir: Type.Optional(Type.String({
+        description: "Build dir to promote (for action=promote). Uses last sandbox dir if omitted.",
       })),
       tagName: Type.Optional(Type.String({
-        description: "Tag name (for action=tag). Auto-generated if omitted.",
+        description: "Tag name for action=tag. Auto-generated if omitted.",
       })),
       force: Type.Optional(Type.Boolean({
         description: "Skip health-check confirmation for promote (not recommended).",
       })),
     }),
     execute: async (_toolCallId: string, params: unknown) => {
-      const p = params as { action: string; branch?: string; tagName?: string; force?: boolean };
-      const action = p.action?.trim();
+      const p = params as {
+        action: string;
+        buildDir?: string;
+        tagName?: string;
+        force?: boolean;
+      };
 
-      switch (action) {
+      switch (p.action?.trim()) {
         case "status":
-          return deployStatus(productionPath);
+          return deployStatus(cfg, sourceRepo);
         case "promote":
-          return deployPromote(productionPath, p.branch, autoRollbackSeconds, p.force ?? false);
+          return deployPromote(cfg, p.buildDir, autoRollbackSeconds, p.force ?? false);
         case "rollback":
-          return deployRollback(productionPath);
+          return deployRollback(cfg);
+        case "cleanup":
+          return deployCleanup(cfg);
         case "tag":
-          return deployTag(productionPath, p.tagName);
+          return deployTag(sourceRepo, p.tagName);
         default:
-          return errResult(`Unknown action '${action}'. Use: status | promote | rollback | tag`);
+          return errResult(`Unknown action '${p.action}'. Use: status | promote | rollback | cleanup | tag`);
       }
     },
   };
@@ -58,187 +73,207 @@ export function createDeployTool(cfg: DevOpsConfig) {
 
 // ── actions ───────────────────────────────────────────────────────────────────
 
-async function deployStatus(productionPath: string) {
-  const [gitLog, lastTag, gwHealth, gwPid] = await Promise.all([
-    runShell("git log --oneline -5", { cwd: productionPath, timeoutMs: 10_000 }),
-    runShell("git tag --sort=-creatordate | grep deployed- | head -3", { cwd: productionPath, timeoutMs: 5000 }),
-    runShell("curl -sf --max-time 3 http://127.0.0.1:18789/health 2>&1 || echo 'health endpoint not available'", { timeoutMs: 8000 }),
-    runShell("ss -ltnp | grep 18789 | head -3", { timeoutMs: 5000 }),
+async function deployStatus(cfg: DevOpsConfig, sourceRepo: string) {
+  const state = readDeployState();
+  const symlink = cfg.globalSymlink ?? "/usr/lib/node_modules/openclaw";
+
+  const [symlinkTarget, gitLog, gwPort] = await Promise.all([
+    runShell(`readlink -f ${symlink}`, { timeoutMs: 5000 }),
+    runShell("git log --oneline -5", { cwd: sourceRepo, timeoutMs: 10_000 }),
+    runShell("ss -ltnp | grep 18789 | head -2", { timeoutMs: 5000 }),
   ]);
 
-  return {
-    content: [{
-      type: "text" as const,
-      text: [
-        "=== Production Status ===",
-        `Git log:\n${gitLog.stdout || gitLog.stderr}`,
-        `Last deployed tags:\n${lastTag.stdout || "(none)"}`,
-        `Gateway port 18789:\n${gwPid.stdout || "not listening"}`,
-        `Health check:\n${gwHealth.stdout}`,
-      ].join("\n\n"),
-    }],
-    details: { ok: true },
-  };
-}
+  const lines = [
+    "=== Production Deploy Status ===",
+    `Symlink (${symlink}):`,
+    `  → ${symlinkTarget.stdout || "(not a symlink or not found)"}`,
+    "",
+    `Deploy state:`,
+    `  active:   ${state.activeDir ?? "(unmanaged)"}`,
+    `  previous: ${state.previousDir ?? "(none)"}`,
+    `  sandbox:  ${state.sandboxDir ?? "(none)"}`,
+    "",
+    `Source repo (${sourceRepo}) git log:`,
+    gitLog.stdout || gitLog.stderr,
+    "",
+    `Gateway port 18789:`,
+    gwPort.stdout || "not listening",
+  ];
 
-async function deployTag(productionPath: string, tagName?: string) {
-  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const tag = tagName ?? `deployed-${ts}`;
-  const result = await runShell(`git tag ${tag}`, { cwd: productionPath, timeoutMs: 10_000 });
   return {
-    content: [{
-      type: "text" as const,
-      text: result.ok ? `✅ Tagged current HEAD as '${tag}'` : `❌ Tagging failed\n${formatResult(result)}`,
-    }],
-    details: { ok: result.ok, tag },
+    content: [{ type: "text" as const, text: lines.join("\n") }],
+    details: { ok: true, state },
   };
 }
 
 async function deployPromote(
-  productionPath: string,
-  branch: string | undefined,
+  cfg: DevOpsConfig,
+  buildDirPath: string | undefined,
   autoRollbackSeconds: number,
   force: boolean,
 ) {
   const steps: string[] = [];
 
-  // 1. Determine branch to merge
-  const branchResult = await runShell(
-    branch ? `echo ${branch}` : "git rev-parse --abbrev-ref HEAD",
-    { cwd: productionPath, timeoutMs: 5000 },
-  );
-  const sourceBranch = branch ?? branchResult.stdout.trim();
-  steps.push(`Promoting branch: ${sourceBranch}`);
+  // Resolve the build dir to promote
+  const state = readDeployState();
+  const targetDir = buildDirPath ?? state.sandboxDir;
+  if (!targetDir) {
+    return errResult("No buildDir specified and no sandbox dir in state. Run devops_sandbox(create) first.");
+  }
+  steps.push(`Promoting: ${targetDir}`);
 
-  // 2. Tag current HEAD as rollback point
-  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const rollbackTag = `deployed-${ts}`;
-  const tagResult = await runShell(`git tag ${rollbackTag}`, { cwd: productionPath, timeoutMs: 5000 });
-  steps.push(tagResult.ok ? `✅ Rollback tag created: ${rollbackTag}` : `⚠️ Tag failed (continuing): ${tagResult.stderr}`);
+  // Verify the build dir has dist/entry.js (was built)
+  const distCheck = await runShell(`ls ${targetDir}/dist/entry.js`, { timeoutMs: 5000 });
+  if (!distCheck.ok) {
+    return errResult(`Build dir ${targetDir} has no dist/entry.js — run devops_sandbox(build) first.`);
+  }
+  steps.push("✅ Build artifacts verified (dist/entry.js exists)");
 
-  // 3. If we're not already on main, merge the branch
-  const currentBranch = await runShell("git rev-parse --abbrev-ref HEAD", { cwd: productionPath, timeoutMs: 5000 });
-  if (currentBranch.stdout.trim() !== "main" || (sourceBranch !== "HEAD" && sourceBranch !== "main")) {
-    const mergeResult = await runShell(
-      `git checkout main && git merge --no-ff ${sourceBranch} -m "deploy: merge ${sourceBranch}"`,
-      { cwd: productionPath, timeoutMs: 30_000 },
-    );
-    if (!mergeResult.ok) {
-      return errResult(`Git merge failed. Rolling back to ${rollbackTag}.\n${formatResult(mergeResult)}`);
-    }
-    steps.push(`✅ Merged ${sourceBranch} → main`);
+  // Read current symlink target before swapping (for rollback)
+  const { ok: swapOk, oldTarget, log: swapLog } = await atomicSwapSymlink(cfg, targetDir);
+  steps.push(swapLog);
+  if (!swapOk) {
+    return errResult(`Symlink swap failed.\n${steps.join("\n")}`);
   }
 
-  // 4. Build production
-  steps.push("Building production...");
-  const buildResult = await runShell("pnpm build", { cwd: productionPath, timeoutMs: 300_000 });
-  if (!buildResult.ok) {
-    // Rollback git
-    await runShell(`git reset --hard ${rollbackTag}`, { cwd: productionPath, timeoutMs: 15_000 });
-    return errResult(`Build failed. Reverted to ${rollbackTag}.\n${formatResult(buildResult)}`);
-  }
-  steps.push("✅ Build complete");
+  // Update deploy state
+  const newState = {
+    activeDir: targetDir,
+    previousDir: state.activeDir ?? oldTarget,
+    sandboxDir: state.sandboxDir,
+    updatedAt: Date.now(),
+  };
+  writeDeployState(newState);
+  steps.push(`Deploy state saved. Previous: ${newState.previousDir}`);
 
-  // 5. Restart gateway
+  // Tag the source repo at current HEAD for audit trail
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
+  const sourceRepo = cfg.sourceRepo ?? SOURCE_REPO_DEFAULT;
+  await runShell(`git tag promoted-${ts} 2>/dev/null || true`, { cwd: sourceRepo, timeoutMs: 5000 });
+  steps.push(`Tagged source repo: promoted-${ts}`);
+
+  // Restart gateway
   const restartResult = await runShell("systemctl restart openclaw-gateway", { timeoutMs: 15_000 });
-  steps.push(restartResult.ok ? "✅ Gateway restarting..." : `⚠️ Restart command result: ${restartResult.stderr}`);
+  steps.push(restartResult.ok ? "✅ Gateway restarting..." : `⚠️ Restart: ${restartResult.stderr.slice(0, 100)}`);
 
   if (force) {
-    steps.push("⚠️ Skipping health check (force=true)");
-    return {
-      content: [{ type: "text" as const, text: steps.join("\n") }],
-      details: { ok: true, tag: rollbackTag },
-    };
+    steps.push("⚠️ force=true: skipping health check");
+    return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: true, activeDir: targetDir } };
   }
 
-  // 6. Watchdog: wait for gateway to come up
+  // Watchdog
   steps.push(`Waiting up to ${autoRollbackSeconds}s for gateway health...`);
-  const healthy = await waitForGatewayHealth(autoRollbackSeconds * 1000);
+  const healthy = await waitForGateway(autoRollbackSeconds * 1000);
 
   if (healthy) {
-    // 7. Clean up sandbox container if it was running
+    // Clean up sandbox container
     await runShell(`docker rm -f ${SANDBOX_CONTAINER_NAME} 2>/dev/null || true`, { timeoutMs: 10_000 });
-    steps.push("✅ Gateway is healthy — deploy complete!");
-    steps.push(`Sandbox container cleaned up.`);
-    return {
-      content: [{ type: "text" as const, text: steps.join("\n") }],
-      details: { ok: true, tag: rollbackTag },
-    };
+    steps.push("✅ Gateway healthy — promotion complete!");
+    steps.push("Sandbox container cleaned up.");
+    return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: true, activeDir: targetDir } };
   }
 
-  // 8. Auto-rollback
-  steps.push(`❌ Gateway not healthy after ${autoRollbackSeconds}s — auto-rolling back to ${rollbackTag}`);
-  const rbResult = await runShell(
-    `git reset --hard ${rollbackTag} && pnpm build`,
-    { cwd: productionPath, timeoutMs: 300_000 },
-  );
-  await runShell("systemctl restart openclaw-gateway", { timeoutMs: 15_000 });
-  steps.push(rbResult.ok ? `✅ Rolled back to ${rollbackTag}` : `⚠️ Rollback build also had issues: ${rbResult.stderr.slice(0, 200)}`);
+  // Auto-rollback
+  steps.push(`❌ Gateway not healthy after ${autoRollbackSeconds}s — AUTO ROLLBACK`);
+  const rbSteps = await doRollback(cfg);
+  steps.push(...rbSteps);
 
+  return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: false } };
+}
+
+async function deployRollback(cfg: DevOpsConfig) {
+  const steps = await doRollback(cfg);
+  const ok = steps.some((s) => s.includes("✅"));
   return {
     content: [{ type: "text" as const, text: steps.join("\n") }],
-    details: { ok: false, rolledBackTo: rollbackTag },
+    details: { ok },
   };
 }
 
-async function deployRollback(productionPath: string) {
-  const steps: string[] = [];
+async function doRollback(cfg: DevOpsConfig): Promise<string[]> {
+  const steps: string[] = ["=== ROLLBACK ==="];
+  const state = readDeployState();
 
-  // Find last deployed tag
-  const tagResult = await runShell(
-    "git tag --sort=-creatordate | grep deployed- | head -1",
-    { cwd: productionPath, timeoutMs: 5000 },
-  );
-  const tag = tagResult.stdout.trim();
-  if (!tag) {
-    return errResult("No deployed-* tag found. Cannot rollback.");
+  const rollbackTarget = state.previousDir;
+  if (!rollbackTarget) {
+    steps.push("❌ No previous build dir recorded in state — cannot auto-rollback.");
+    steps.push("You can manually run: ln -sfn <old-dir> /usr/lib/node_modules/openclaw && systemctl restart openclaw-gateway");
+    return steps;
   }
-  steps.push(`Rolling back to: ${tag}`);
 
-  // Reset to tag
-  const resetResult = await runShell(`git reset --hard ${tag}`, { cwd: productionPath, timeoutMs: 15_000 });
-  if (!resetResult.ok) {
-    return errResult(`git reset failed\n${formatResult(resetResult)}`);
+  steps.push(`Rolling back to: ${rollbackTarget}`);
+
+  // Verify rollback target still exists and has dist
+  const distCheck = await runShell(`ls ${rollbackTarget}/dist/entry.js`, { timeoutMs: 5000 });
+  if (!distCheck.ok) {
+    steps.push(`❌ Rollback target ${rollbackTarget} has no dist/entry.js`);
+    return steps;
   }
-  steps.push(`✅ Reset to ${tag}`);
 
-  // Rebuild
-  const buildResult = await runShell("pnpm build", { cwd: productionPath, timeoutMs: 300_000 });
-  if (!buildResult.ok) {
-    steps.push(`❌ Build failed\n${buildResult.stderr.slice(0, 300)}`);
-    return {
-      content: [{ type: "text" as const, text: steps.join("\n") }],
-      details: { ok: false },
-    };
+  const { ok: swapOk, log: swapLog } = await atomicSwapSymlink(cfg, rollbackTarget);
+  steps.push(swapLog);
+  if (!swapOk) {
+    return steps;
   }
-  steps.push("✅ Build complete");
 
-  // Restart
-  await runShell("systemctl restart openclaw-gateway", { timeoutMs: 15_000 });
-  steps.push("✅ Gateway restarting...");
+  // Update state
+  const currentActive = state.activeDir;
+  writeDeployState({
+    ...state,
+    activeDir: rollbackTarget,
+    previousDir: currentActive,
+    updatedAt: Date.now(),
+  });
 
-  const healthy = await waitForGatewayHealth(40_000);
-  steps.push(healthy ? "✅ Gateway healthy — rollback complete!" : "⚠️ Gateway may still be starting, check manually.");
+  const restartResult = await runShell("systemctl restart openclaw-gateway", { timeoutMs: 15_000 });
+  steps.push(restartResult.ok ? "✅ Gateway restarting..." : `Restart: ${restartResult.stderr.slice(0, 100)}`);
 
+  const healthy = await waitForGateway(40_000);
+  steps.push(healthy ? "✅ Rollback complete — gateway healthy!" : "⚠️ Gateway may still be starting, check manually.");
+
+  return steps;
+}
+
+async function deployCleanup(cfg: DevOpsConfig) {
+  await pruneOldBuilds(cfg, 3);
+  const state = readDeployState();
   return {
-    content: [{ type: "text" as const, text: steps.join("\n") }],
-    details: { ok: healthy, rolledBackTo: tag },
+    content: [{
+      type: "text" as const,
+      text: `Cleaned up old build dirs (kept last 3).\nActive: ${state.activeDir}\nPrevious: ${state.previousDir}`,
+    }],
+    details: { ok: true },
+  };
+}
+
+async function deployTag(sourceRepo: string, tagName?: string) {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
+  const tag = tagName ?? `snapshot-${ts}`;
+  const result = await runShell(`git tag ${tag}`, { cwd: sourceRepo, timeoutMs: 10_000 });
+  return {
+    content: [{
+      type: "text" as const,
+      text: result.ok ? `✅ Tagged source repo HEAD as '${tag}'` : `❌ Tagging failed\n${formatResult(result)}`,
+    }],
+    details: { ok: result.ok, tag },
   };
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-async function waitForGatewayHealth(maxMs: number): Promise<boolean> {
+async function waitForGateway(maxMs: number): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
     await new Promise((r) => setTimeout(r, 4000));
-    const result = await runShell("ss -ltnp | grep 18789", { timeoutMs: 5000 });
-    if (result.ok && result.stdout.includes("18789")) {
+    const logs = await runShell(
+      "journalctl -u openclaw-gateway -n 5 --no-pager 2>/dev/null",
+      { timeoutMs: 5000 },
+    );
+    if (logs.stdout.includes("listening on")) {
       return true;
     }
-    // Also check journal for "listening on"
-    const logs = await runShell("journalctl -u openclaw-gateway -n 5 --no-pager 2>/dev/null", { timeoutMs: 5000 });
-    if (logs.stdout.includes("listening on")) {
+    const port = await runShell("ss -ltnp | grep 18789", { timeoutMs: 3000 });
+    if (port.ok && port.stdout.includes("18789")) {
       return true;
     }
   }

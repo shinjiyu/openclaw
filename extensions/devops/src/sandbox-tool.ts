@@ -1,8 +1,14 @@
 import { Type } from "@sinclair/typebox";
+import {
+  buildDir,
+  createBuildDir,
+  installBuildDir,
+  readDeployState,
+  writeDeployState,
+} from "./build-dir.js";
 import { formatResult, runShell } from "./run.js";
 import type { DevOpsConfig } from "./types.js";
 import {
-  PRODUCTION_PATH_DEFAULT,
   SANDBOX_CONFIG_DIR_DEFAULT,
   SANDBOX_CONTAINER_NAME,
   SANDBOX_IMAGE_TAG,
@@ -10,7 +16,6 @@ import {
 } from "./types.js";
 
 export function createSandboxTool(cfg: DevOpsConfig) {
-  const productionPath = cfg.productionPath ?? PRODUCTION_PATH_DEFAULT;
   const sandboxPort = cfg.sandboxPort ?? SANDBOX_PORT_DEFAULT;
   const sandboxConfigDir = cfg.sandboxConfigDir ?? SANDBOX_CONFIG_DIR_DEFAULT;
 
@@ -18,43 +23,63 @@ export function createSandboxTool(cfg: DevOpsConfig) {
     name: "devops_sandbox",
     label: "DevOps Sandbox",
     description: [
-      "Manage the Docker sandbox environment for testing openclaw code changes.",
-      "Actions: build (build sandbox image from current source), start (run sandbox container on port sandboxPort),",
-      "test (run pnpm test inside sandbox), health (check sandbox gateway is responding),",
-      "exec (run a command inside sandbox container), stop (destroy sandbox container), status (inspect sandbox state).",
+      "Manage an isolated build + Docker sandbox environment for testing code changes.",
+      "SAFE: all modifications happen in a temp build dir, never touching the running production source.",
+      "Actions:",
+      "create — clone source repo into a fresh isolated build dir (returns buildDir path).",
+      "build — build Docker sandbox image from a build dir (runs pnpm build inside Docker).",
+      "start — run sandbox container on port 18790 (isolated config).",
+      "health — wait for sandbox gateway to be ready.",
+      "test — run pnpm test inside sandbox container.",
+      "exec — run arbitrary command inside sandbox container.",
+      "stop — destroy sandbox container.",
+      "status — show current sandbox and deploy state.",
     ].join(" "),
     parameters: Type.Object({
       action: Type.String({
-        description: "One of: build | start | stop | status | health | test | exec",
+        description: "One of: create | build | start | health | test | exec | stop | status",
       }),
+      buildDir: Type.Optional(Type.String({
+        description: "Path to the isolated build dir (from action=create). Required for build/start.",
+      })),
+      label: Type.Optional(Type.String({
+        description: "Short label for the build dir name (for action=create).",
+      })),
       command: Type.Optional(Type.String({
-        description: "Command to run inside container (only for action=exec).",
+        description: "Command to run inside container (for action=exec).",
       })),
       timeoutSeconds: Type.Optional(Type.Number({
-        description: "Timeout for this operation. Default: 60 (build: 600).",
+        description: "Timeout override (default: 60, build: 600).",
       })),
     }),
     execute: async (_toolCallId: string, params: unknown) => {
-      const p = params as { action: string; command?: string; timeoutSeconds?: number };
-      const action = p.action?.trim();
+      const p = params as {
+        action: string;
+        buildDir?: string;
+        label?: string;
+        command?: string;
+        timeoutSeconds?: number;
+      };
 
-      switch (action) {
+      switch (p.action?.trim()) {
+        case "create":
+          return sandboxCreate(cfg, p.label, p.timeoutSeconds);
         case "build":
-          return sandboxBuild(productionPath, p.timeoutSeconds);
+          return sandboxBuild(p.buildDir, p.timeoutSeconds);
         case "start":
-          return sandboxStart(productionPath, sandboxPort, sandboxConfigDir, p.timeoutSeconds);
-        case "stop":
-          return sandboxStop(p.timeoutSeconds);
-        case "status":
-          return sandboxStatus(sandboxPort);
+          return sandboxStart(p.buildDir, sandboxPort, sandboxConfigDir, p.timeoutSeconds);
         case "health":
           return sandboxHealth(sandboxPort, p.timeoutSeconds);
         case "test":
           return sandboxTest(p.timeoutSeconds);
         case "exec":
           return sandboxExec(p.command ?? "", p.timeoutSeconds);
+        case "stop":
+          return sandboxStop(p.timeoutSeconds);
+        case "status":
+          return sandboxStatus(sandboxPort);
         default:
-          return errResult(`Unknown action '${action}'. Use: build | start | stop | status | health | test | exec`);
+          return errResult(`Unknown action '${p.action}'. Use: create | build | start | health | test | exec | stop | status`);
       }
     },
   };
@@ -62,141 +87,147 @@ export function createSandboxTool(cfg: DevOpsConfig) {
 
 // ── actions ───────────────────────────────────────────────────────────────────
 
-async function sandboxBuild(productionPath: string, timeoutSeconds?: number) {
+async function sandboxCreate(cfg: DevOpsConfig, label?: string, timeoutSeconds?: number) {
+  const steps: string[] = [];
+
+  steps.push("Step 1/3: Cloning source repo into isolated build dir...");
+  const { ok: cloneOk, buildDir: dir, log: cloneLog } = await createBuildDir(cfg, label);
+  steps.push(cloneLog);
+  if (!cloneOk) {
+    return errResult(steps.join("\n"));
+  }
+
+  steps.push(`\nStep 2/3: Installing dependencies in ${dir}...`);
+  const { ok: installOk, log: installLog } = await installBuildDir(dir);
+  steps.push(installLog);
+  if (!installOk) {
+    steps.push("⚠️ Dependency install had issues — build may still work if they are optional native deps");
+  }
+
+  // Save sandbox dir in deploy state so other actions can find it
+  const state = readDeployState();
+  writeDeployState({ ...state, sandboxDir: dir, updatedAt: Date.now() });
+
+  steps.push(`\n✅ Isolated build dir ready: ${dir}`);
+  steps.push(`\nStep 3/3: You can now:`);
+  steps.push(`  • Modify source files using shell_exec with cwd="${dir}/src/..."`);
+  steps.push(`  • Run devops_sandbox(build, buildDir="${dir}") to compile + build Docker image`);
+  steps.push(`  • Run devops_sandbox(start, buildDir="${dir}") to launch sandbox on port 18790`);
+
+  return {
+    content: [{ type: "text" as const, text: steps.join("\n") }],
+    details: { ok: true, buildDir: dir },
+  };
+}
+
+async function sandboxBuild(buildDirPath: string | undefined, timeoutSeconds?: number) {
+  const dir = buildDirPath ?? readDeployState().sandboxDir;
+  if (!dir) {
+    return errResult("buildDir required (or run action=create first)");
+  }
   const timeoutMs = (timeoutSeconds ?? 600) * 1000;
+  const steps: string[] = [`Building Docker image from: ${dir}`];
+
+  // Build the image from the build dir
   const result = await runShell(
-    `docker build -t ${SANDBOX_IMAGE_TAG} .`,
-    { cwd: productionPath, timeoutMs },
+    `docker build -t ${SANDBOX_IMAGE_TAG} ${dir}`,
+    { cwd: dir, timeoutMs },
   );
   const text = formatResult(result, "docker build");
+  steps.push(text);
+
   return {
-    content: [{ type: "text" as const, text: result.ok ? `✅ Sandbox image built: ${SANDBOX_IMAGE_TAG}\n${text}` : `❌ Build failed\n${text}` }],
-    details: { ok: result.ok, exitCode: result.exitCode },
+    content: [{
+      type: "text" as const,
+      text: result.ok
+        ? `✅ Sandbox image built: ${SANDBOX_IMAGE_TAG}\n${steps.join("\n")}`
+        : `❌ Build failed\n${steps.join("\n")}`,
+    }],
+    details: { ok: result.ok, buildDir: dir },
   };
 }
 
 async function sandboxStart(
-  productionPath: string,
+  buildDirPath: string | undefined,
   sandboxPort: number,
   sandboxConfigDir: string,
   timeoutSeconds?: number,
 ) {
+  const dir = buildDirPath ?? readDeployState().sandboxDir;
+  if (!dir) {
+    return errResult("buildDir required (or run action=create first)");
+  }
   const timeoutMs = (timeoutSeconds ?? 60) * 1000;
 
-  // Ensure sandbox config dir exists
   await runShell(`mkdir -p ${sandboxConfigDir}`, { timeoutMs: 5000 });
-
-  // Remove any existing sandbox container
   await runShell(`docker rm -f ${SANDBOX_CONTAINER_NAME} 2>/dev/null || true`, { timeoutMs: 10_000 });
 
   const runCmd = [
     "docker run -d",
     `--name ${SANDBOX_CONTAINER_NAME}`,
-    `--env NODE_ENV=production`,
-    `--env OPENCLAW_SANDBOX=1`,
-    // Mount isolated config dir
+    "--env NODE_ENV=production",
+    "--env OPENCLAW_SANDBOX=1",
     `-v ${sandboxConfigDir}:/root/.openclaw`,
-    // Mount source read-only so we don't need to copy files each time
-    `-v ${productionPath}:/app:ro`,
-    // Expose gateway port on host
     `-p 127.0.0.1:${sandboxPort}:18789`,
     SANDBOX_IMAGE_TAG,
     "node /app/dist/entry.js gateway run --port 18789 --bind loopback",
   ].join(" ");
 
-  const result = await runShell(runCmd, { cwd: productionPath, timeoutMs });
-  const text = formatResult(result, "docker run");
+  const result = await runShell(runCmd, { cwd: dir, timeoutMs });
+
   return {
     content: [{
       type: "text" as const,
       text: result.ok
-        ? `✅ Sandbox container started on port ${sandboxPort}\n${text}\nUse devops_sandbox(health) to wait for it to be ready.`
-        : `❌ Failed to start sandbox\n${text}`,
+        ? `✅ Sandbox started on port ${sandboxPort} (source: ${dir})\nUse devops_sandbox(health) to wait for it to be ready.`
+        : `❌ Failed to start sandbox\n${formatResult(result)}`,
     }],
-    details: { ok: result.ok, sandboxPort, containerName: SANDBOX_CONTAINER_NAME },
-  };
-}
-
-async function sandboxStop(timeoutSeconds?: number) {
-  const timeoutMs = (timeoutSeconds ?? 30) * 1000;
-  const result = await runShell(
-    `docker rm -f ${SANDBOX_CONTAINER_NAME} 2>/dev/null || echo "container not running"`,
-    { timeoutMs },
-  );
-  return {
-    content: [{ type: "text" as const, text: `Sandbox stopped.\n${formatResult(result, "docker rm")}` }],
-    details: { ok: true },
-  };
-}
-
-async function sandboxStatus(sandboxPort: number) {
-  const [inspect, port] = await Promise.all([
-    runShell(`docker inspect ${SANDBOX_CONTAINER_NAME} --format '{{.State.Status}} {{.State.StartedAt}}'`, { timeoutMs: 10_000 }),
-    runShell(`ss -ltnp 2>/dev/null | grep ${sandboxPort} || echo "port not listening"`, { timeoutMs: 5000 }),
-  ]);
-
-  const status = inspect.ok ? inspect.stdout : "container not found";
-  const portStatus = port.stdout;
-  return {
-    content: [{
-      type: "text" as const,
-      text: `Sandbox container: ${status}\nPort ${sandboxPort}: ${portStatus}`,
-    }],
-    details: { containerStatus: status, portStatus },
+    details: { ok: result.ok, sandboxPort, buildDir: dir },
   };
 }
 
 async function sandboxHealth(sandboxPort: number, timeoutSeconds?: number) {
-  const maxWaitMs = (timeoutSeconds ?? 30) * 1000;
+  const maxWaitMs = (timeoutSeconds ?? 40) * 1000;
   const start = Date.now();
-  const interval = 3000;
 
-  let lastError = "";
   while (Date.now() - start < maxWaitMs) {
-    const result = await runShell(
-      `curl -sf --max-time 3 http://127.0.0.1:${sandboxPort}/health 2>&1 || curl -sf --max-time 3 http://127.0.0.1:${sandboxPort}/ 2>&1`,
-      { timeoutMs: 10_000 },
-    );
-    if (result.exitCode === 0 || result.stdout.includes("openclaw") || result.stdout.includes("gateway")) {
-      return {
-        content: [{ type: "text" as const, text: `✅ Sandbox gateway is healthy on port ${sandboxPort} (waited ${Date.now() - start}ms)` }],
-        details: { ok: true, waitedMs: Date.now() - start },
-      };
-    }
-    // Also check if container logs show "listening"
-    const logs = await runShell(`docker logs --tail 10 ${SANDBOX_CONTAINER_NAME} 2>&1`, { timeoutMs: 5000 });
+    const logs = await runShell(`docker logs --tail 15 ${SANDBOX_CONTAINER_NAME} 2>&1`, { timeoutMs: 5000 });
     if (logs.stdout.includes("listening on")) {
       return {
-        content: [{ type: "text" as const, text: `✅ Sandbox gateway started (listening) on port ${sandboxPort}` }],
+        content: [{ type: "text" as const, text: `✅ Sandbox gateway ready on port ${sandboxPort} (${Date.now() - start}ms)` }],
         details: { ok: true, waitedMs: Date.now() - start },
       };
     }
-    lastError = result.stderr || result.stdout || "no response";
-    await new Promise((r) => setTimeout(r, interval));
+    if (logs.stdout.includes("Error") && logs.stdout.includes("exit")) {
+      return {
+        content: [{ type: "text" as const, text: `❌ Sandbox container crashed:\n${logs.stdout.slice(-500)}` }],
+        details: { ok: false },
+      };
+    }
+    await new Promise((r) => setTimeout(r, 3000));
   }
 
+  const finalLogs = await runShell(`docker logs --tail 20 ${SANDBOX_CONTAINER_NAME} 2>&1`, { timeoutMs: 5000 });
   return {
-    content: [{ type: "text" as const, text: `❌ Sandbox not healthy after ${maxWaitMs / 1000}s. Last error: ${lastError}` }],
-    details: { ok: false, lastError },
+    content: [{ type: "text" as const, text: `❌ Sandbox not ready after ${maxWaitMs / 1000}s\nLogs:\n${finalLogs.stdout}` }],
+    details: { ok: false },
   };
 }
 
 async function sandboxTest(timeoutSeconds?: number) {
   const timeoutMs = (timeoutSeconds ?? 300) * 1000;
-  // Run tests inside the container (mounts source as /app)
   const result = await runShell(
     `docker exec ${SANDBOX_CONTAINER_NAME} sh -c "cd /app && node node_modules/.bin/vitest run --reporter=verbose 2>&1"`,
     { timeoutMs },
   );
-  const passed = result.ok;
   return {
     content: [{
       type: "text" as const,
-      text: passed
+      text: result.ok
         ? `✅ Tests passed\n${result.stdout.slice(0, 3000)}`
-        : `❌ Tests failed (exit ${result.exitCode})\n${result.stdout.slice(0, 2000)}\n${result.stderr.slice(0, 1000)}`,
+        : `❌ Tests failed (exit ${result.exitCode})\n${result.stdout.slice(0, 2000)}\n${result.stderr.slice(0, 500)}`,
     }],
-    details: { ok: passed, exitCode: result.exitCode },
+    details: { ok: result.ok, exitCode: result.exitCode },
   };
 }
 
@@ -212,6 +243,39 @@ async function sandboxExec(command: string, timeoutSeconds?: number) {
   return {
     content: [{ type: "text" as const, text: formatResult(result, `exec: ${command.slice(0, 50)}`) }],
     details: { ok: result.ok, exitCode: result.exitCode },
+  };
+}
+
+async function sandboxStop(timeoutSeconds?: number) {
+  const timeoutMs = (timeoutSeconds ?? 30) * 1000;
+  const result = await runShell(
+    `docker rm -f ${SANDBOX_CONTAINER_NAME} 2>/dev/null || echo "container not running"`,
+    { timeoutMs },
+  );
+  return {
+    content: [{ type: "text" as const, text: `Sandbox stopped.\n${formatResult(result)}` }],
+    details: { ok: true },
+  };
+}
+
+async function sandboxStatus(sandboxPort: number) {
+  const state = readDeployState();
+  const [inspect, port] = await Promise.all([
+    runShell(`docker inspect ${SANDBOX_CONTAINER_NAME} --format '{{.State.Status}} started={{.State.StartedAt}}'`, { timeoutMs: 10_000 }),
+    runShell(`ss -ltnp 2>/dev/null | grep ${sandboxPort} || echo "port not listening"`, { timeoutMs: 5000 }),
+  ]);
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: [
+        `Sandbox dir: ${state.sandboxDir ?? "(none — run action=create first)"}`,
+        `Active production dir: ${state.activeDir ?? "(initial install — not yet managed)"}`,
+        `Container: ${inspect.ok ? inspect.stdout : "not found"}`,
+        `Port ${sandboxPort}: ${port.stdout}`,
+      ].join("\n"),
+    }],
+    details: { ok: true, state },
   };
 }
 
