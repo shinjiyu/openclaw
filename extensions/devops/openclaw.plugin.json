@@ -1,0 +1,35 @@
+{
+  "id": "devops",
+  "name": "DevOps",
+  "description": "Safe shell execution, Docker sandbox testing, and self-deploy/rollback for openclaw self-modification.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "productionPath": {
+        "type": "string",
+        "description": "Absolute path to the production openclaw source repo. Default: /root/openclaw-fork"
+      },
+      "sandboxPort": {
+        "type": "number",
+        "description": "Host port for the sandbox Docker container. Default: 18790"
+      },
+      "sandboxConfigDir": {
+        "type": "string",
+        "description": "Isolated config directory mounted into sandbox container. Default: /root/.openclaw-sandbox"
+      },
+      "maxShellTimeoutSeconds": {
+        "type": "number",
+        "description": "Maximum allowed shell command timeout in seconds. Default: 600"
+      },
+      "autoRollbackSeconds": {
+        "type": "number",
+        "description": "Seconds to wait after deploy before triggering auto-rollback on failure. Default: 40"
+      },
+      "requireTestsPass": {
+        "type": "boolean",
+        "description": "Require pnpm test to pass before promote. Default: false (health-check only)"
+      }
+    }
+  }
+}
