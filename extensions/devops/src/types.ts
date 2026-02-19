@@ -5,6 +5,14 @@ export type DevOpsConfig = {
   buildsDir?: string;
   /** Global npm symlink that production uses. Default: /usr/lib/node_modules/openclaw */
   globalSymlink?: string;
+  /**
+   * Shell command to restart the gateway after promote/rollback.
+   * Default (Linux): "systemctl restart openclaw-gateway"
+   * macOS example:   "pkill -9 -f 'openclaw gateway' || true; sleep 2; nohup pnpm --prefix /path/to/openclaw openclaw gateway run --bind loopback --port 18789 >> /tmp/openclaw-gateway.log 2>&1 &"
+   */
+  gatewayRestartCmd?: string;
+  /** Shell command to check if the gateway is healthy. Default: "ss -ltnp | grep 18789" */
+  gatewayHealthCmd?: string;
   sandboxPort?: number;
   sandboxConfigDir?: string;
   maxShellTimeoutSeconds?: number;

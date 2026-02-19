@@ -28,6 +28,8 @@ export function createDeployTool(cfg: DevOpsConfig) {
   const autoRollbackSeconds = cfg.autoRollbackSeconds ?? AUTO_ROLLBACK_SECONDS_DEFAULT;
   const sourceRepo = cfg.sourceRepo ?? SOURCE_REPO_DEFAULT;
   const buildsDir = cfg.buildsDir ?? BUILDS_DIR_DEFAULT;
+  const restartCmd = cfg.gatewayRestartCmd ?? "systemctl restart openclaw-gateway";
+  const healthCmd = cfg.gatewayHealthCmd ?? "ss -ltnp | grep 18789";
 
   return {
     name: "devops_deploy",
@@ -71,11 +73,11 @@ export function createDeployTool(cfg: DevOpsConfig) {
 
       switch (p.action?.trim()) {
         case "status":
-          return deployStatus(cfg, sourceRepo);
+          return deployStatus(cfg, sourceRepo, healthCmd);
         case "promote":
-          return deployPromote(cfg, p.buildDir, autoRollbackSeconds, p.force ?? false, buildsDir);
+          return deployPromote(cfg, p.buildDir, autoRollbackSeconds, p.force ?? false, buildsDir, restartCmd, healthCmd);
         case "rollback":
-          return deployRollback(cfg);
+          return deployRollback(cfg, restartCmd);
         case "logs":
           return deployLogs();
         case "cleanup":
@@ -91,15 +93,15 @@ export function createDeployTool(cfg: DevOpsConfig) {
 
 // ── status ────────────────────────────────────────────────────────────────────
 
-async function deployStatus(cfg: DevOpsConfig, sourceRepo: string) {
+async function deployStatus(cfg: DevOpsConfig, sourceRepo: string, healthCmd: string) {
   log.info("status check");
   const state = readDeployState();
   const symlink = cfg.globalSymlink ?? "/usr/lib/node_modules/openclaw";
 
   const [symlinkTarget, gitLog, gwPort] = await Promise.all([
-    runShell(`readlink -f ${symlink}`, { timeoutMs: 5000 }),
+    runShell(`readlink -f ${symlink} 2>/dev/null || readlink ${symlink} 2>/dev/null || echo "(not a symlink)"`, { timeoutMs: 5000 }),
     runShell("git log --oneline -5", { cwd: sourceRepo, timeoutMs: 10_000 }),
-    runShell("ss -ltnp | grep 18789 | head -2", { timeoutMs: 5000 }),
+    runShell(`${healthCmd} | head -2`, { timeoutMs: 5000 }),
   ]);
 
   // Last watchdog result
@@ -145,6 +147,8 @@ async function deployPromote(
   autoRollbackSeconds: number,
   force: boolean,
   buildsDir: string,
+  restartCmd: string,
+  healthCmd: string,
 ) {
   const steps: string[] = [];
   const step = (msg: string) => {
@@ -207,7 +211,7 @@ async function deployPromote(
   if (force) {
     // Immediate restart (not safe from chat context — user explicitly opted in)
     step("⚠️ force=true: restarting immediately (not chat-safe)");
-    await runShell("systemctl restart openclaw-gateway", { timeoutMs: 15_000 });
+    await runShell(restartCmd, { timeoutMs: 15_000 });
     step("Gateway restarting...");
     return { content: [{ type: "text" as const, text: steps.join("\n") }], details: { ok: true } };
   }
@@ -222,6 +226,8 @@ async function deployPromote(
     autoRollbackSeconds,
     buildsDir,
     sourceRepo,
+    restartCmd,
+    healthCmd,
   });
   step(`Watchdog script written: ${watchdogPath}`);
 
@@ -233,8 +239,9 @@ async function deployPromote(
   step(launchResult.ok ? "✅ Watchdog launched (background)" : `⚠️ Watchdog launch: ${launchResult.stderr}`);
 
   // Schedule deferred restart (5s delay — allows this response to be delivered first)
+  const escapedCmd = restartCmd.replace(/'/g, "'\\''");
   const deferredResult = await runShell(
-    `nohup bash -c "sleep 5 && systemctl restart openclaw-gateway" >> ${DEVOPS_LOG_FILE} 2>&1 &`,
+    `nohup bash -c 'sleep 5 && ${escapedCmd}' >> ${DEVOPS_LOG_FILE} 2>&1 &`,
     { timeoutMs: 5000 },
   );
   step(deferredResult.ok
@@ -265,6 +272,8 @@ async function writeWatchdogScript(opts: {
   autoRollbackSeconds: number;
   buildsDir: string;
   sourceRepo: string;
+  restartCmd: string;
+  healthCmd: string;
 }): Promise<string> {
   const scriptPath = path.join(os.tmpdir(), `openclaw-watchdog-${Date.now()}.sh`);
   const stateFile = DEVOPS_LOG_FILE.replace("/deploy.log", "/deploy-state.json");
@@ -272,9 +281,10 @@ async function writeWatchdogScript(opts: {
 
   const script = `#!/usr/bin/env bash
 # OpenClaw deploy watchdog — auto-generated, do not edit
-# Target: ${opts.targetDir}
+# Target:   ${opts.targetDir}
 # Previous: ${opts.previousDir ?? "none"}
-set -euo pipefail
+# RestartCmd: ${opts.restartCmd}
+# HealthCmd:  ${opts.healthCmd}
 
 TARGET_DIR="${opts.targetDir}"
 PREV_DIR="${opts.previousDir ?? ""}"
@@ -282,6 +292,8 @@ SYMLINK="${opts.symlink}"
 RESULT_FILE="${resultFile}"
 BUILDS_DIR="${opts.buildsDir}"
 MAX_WAIT_SECS="${opts.autoRollbackSeconds}"
+HEALTH_CMD=${JSON.stringify(opts.healthCmd)}
+RESTART_CMD=${JSON.stringify(opts.restartCmd)}
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log()  { echo "[\$(ts)] [INFO ] [watchdog] $*"; }
@@ -290,32 +302,37 @@ loge() { echo "[\$(ts)] [ERROR] [watchdog] $*"; }
 
 save_result() {
   local ok="$1" msg="$2"
-  echo "{\\"ts\\":\\"\$(ts)\\",\\"ok\\":${ok},\\"message\\":\\"${msg}\\"}" > "$RESULT_FILE" 2>/dev/null || true
+  printf '{"ts":"%s","ok":%s,"message":"%s"}\\n' "\$(ts)" "$ok" "$msg" > "$RESULT_FILE" 2>/dev/null || true
 }
 
 log "=== WATCHDOG STARTED (pid $$) ==="
-log "Target dir : $TARGET_DIR"
-log "Previous   : \${PREV_DIR:-none}"
-log "Symlink    : $SYMLINK"
-log "Max wait   : ${opts.autoRollbackSeconds}s"
+log "Target dir  : $TARGET_DIR"
+log "Previous    : \${PREV_DIR:-none}"
+log "Symlink     : $SYMLINK"
+log "Max wait    : ${opts.autoRollbackSeconds}s"
+log "Health cmd  : $HEALTH_CMD"
+log "Restart cmd : $RESTART_CMD"
 
 # Give the deferred restart time to fire
 sleep 8
 
-# Poll for gateway health
-log "Polling port 18789 (max ${opts.autoRollbackSeconds}s)..."
+# Poll for gateway health using the configured health command
+log "Polling health (max ${opts.autoRollbackSeconds}s)..."
 waited=0
 healthy=false
 while [ "$waited" -lt "$MAX_WAIT_SECS" ]; do
-  if ss -ltnp 2>/dev/null | grep -q "18789"; then
-    log "Port 18789 is listening — gateway healthy (waited \${waited}s)"
+  if eval "$HEALTH_CMD" > /dev/null 2>&1; then
+    log "Health check passed — gateway healthy (waited \${waited}s)"
     healthy=true
     break
   fi
-  if journalctl -u openclaw-gateway -n 3 --no-pager 2>/dev/null | grep -q "listening on"; then
-    log "Journal shows 'listening on' — gateway healthy (waited \${waited}s)"
-    healthy=true
-    break
+  # Also check journal if available
+  if command -v journalctl >/dev/null 2>&1; then
+    if journalctl -u openclaw-gateway -n 3 --no-pager 2>/dev/null | grep -q "listening on"; then
+      log "Journal: 'listening on' — gateway healthy (waited \${waited}s)"
+      healthy=true
+      break
+    fi
   fi
   log "Not ready yet (\${waited}s elapsed)..."
   sleep 4
@@ -363,13 +380,13 @@ ln -sfn "$PREV_DIR" "$SYMLINK"
 log "Symlink reverted to $PREV_DIR"
 
 log "Restarting gateway with previous version..."
-systemctl restart openclaw-gateway
+eval "$RESTART_CMD"
 
 # Wait for rollback gateway
 rb_waited=0
 rb_healthy=false
 while [ "$rb_waited" -lt 40 ]; do
-  if ss -ltnp 2>/dev/null | grep -q "18789"; then
+  if eval "$HEALTH_CMD" > /dev/null 2>&1; then
     log "Rollback gateway healthy (waited \${rb_waited}s)"
     rb_healthy=true
     break
@@ -398,7 +415,7 @@ exit 1
 
 // ── rollback ──────────────────────────────────────────────────────────────────
 
-async function deployRollback(cfg: DevOpsConfig) {
+async function deployRollback(cfg: DevOpsConfig, restartCmd: string) {
   const steps: string[] = [];
   const step = (msg: string) => { steps.push(msg); log.info(msg); };
 
@@ -433,8 +450,9 @@ async function deployRollback(cfg: DevOpsConfig) {
   });
 
   // Deferred restart (same chat-safe pattern)
+  const escapedCmd = restartCmd.replace(/'/g, "'\\''");
   const launchResult = await runShell(
-    `nohup bash -c "sleep 5 && systemctl restart openclaw-gateway" >> ${DEVOPS_LOG_FILE} 2>&1 &`,
+    `nohup bash -c 'sleep 5 && ${escapedCmd}' >> ${DEVOPS_LOG_FILE} 2>&1 &`,
     { timeoutMs: 5000 },
   );
   step(launchResult.ok ? "✅ Deferred restart scheduled (~5s)" : `Restart: ${launchResult.stderr}`);

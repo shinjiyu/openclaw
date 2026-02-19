@@ -18,6 +18,14 @@
         "type": "string",
         "description": "Global npm symlink that production uses. Default: /usr/lib/node_modules/openclaw"
       },
+      "gatewayRestartCmd": {
+        "type": "string",
+        "description": "Shell command to restart the gateway. Default (Linux): 'systemctl restart openclaw-gateway'. macOS: set to pkill+nohup pattern."
+      },
+      "gatewayHealthCmd": {
+        "type": "string",
+        "description": "Shell command to verify gateway is up (exit 0 = healthy). Default: 'ss -ltnp | grep 18789'. macOS: 'lsof -iTCP:18789 -sTCP:LISTEN'."
+      },
       "sandboxPort": {
         "type": "number",
         "description": "Host port for the sandbox Docker container. Default: 18790"
