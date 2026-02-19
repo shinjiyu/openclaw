@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { AnyAgentTool } from "../pi-tools.js";
+import type { AnyAgentTool } from "./common.js";
 import { callGatewayTool } from "./gateway.js";
 
 /** Agent tool: create a background task and return its id immediately. */
