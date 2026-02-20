@@ -20,6 +20,18 @@ const WORKER_POLL_INTERVAL_MS = 3_000;
 /** Max concurrent task executions. */
 const MAX_CONCURRENT_TASKS = 3;
 
+/**
+ * Default timeout for background tasks when not specified by the caller (30 minutes).
+ * Longer than the interactive agent default (10 min) because tasks run fully autonomously.
+ */
+const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Watchdog: how much extra time beyond the task's own timeout before we force-fail it.
+ * Guards against rare cases where the internal timeout fires but the promise stays alive.
+ */
+const WATCHDOG_GRACE_MS = 60_000;
+
 export type TaskServiceDeps = {
   deps: CliDeps;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
@@ -48,7 +60,29 @@ export class TaskService {
       return;
     }
     log.info("task service starting");
+    // Recover tasks that were "running" when the gateway last shut down.
+    // Re-queue them so they are picked up in the next tick.
+    this.recoverStuckTasks();
     this.armTimer();
+  }
+
+  private recoverStuckTasks() {
+    try {
+      const cfg = loadConfig();
+      const agentId = resolveDefaultAgentId(cfg);
+      const storePath = resolveTaskStorePath(agentId);
+      const stuck = listTasks(storePath, { status: "running" });
+      for (const task of stuck) {
+        // If we're not tracking it in memory (always true at startup), requeue.
+        if (!this.running.has(task.id)) {
+          log.warn("recovering stuck task: requeueing", { taskId: task.id });
+          updateTask(storePath, task.id, { status: "queued", startedAt: undefined });
+          this.emit({ action: "updated", taskId: task.id, patch: { status: "queued" } });
+        }
+      }
+    } catch (err) {
+      log.warn("failed to recover stuck tasks on startup", { err: String(err) });
+    }
   }
 
   stop() {
@@ -140,6 +174,31 @@ export class TaskService {
     if (this.stopped) {
       return;
     }
+
+    // Watchdog: abort tasks that have been running longer than their timeout + grace period.
+    const now = Date.now();
+    for (const [taskId, entry] of this.running) {
+      try {
+        const task = getTask(entry.storePath, taskId);
+        if (!task || !task.startedAt) {
+          continue;
+        }
+        const timeoutMs =
+          task.timeoutSeconds != null ? task.timeoutSeconds * 1000 : DEFAULT_TASK_TIMEOUT_MS;
+        const elapsed = now - task.startedAt;
+        if (elapsed > timeoutMs + WATCHDOG_GRACE_MS) {
+          log.warn("watchdog: aborting task that exceeded timeout", {
+            taskId,
+            elapsed,
+            timeoutMs,
+          });
+          entry.abortController.abort(new Error("watchdog timeout exceeded"));
+        }
+      } catch (err) {
+        log.warn("watchdog check error", { taskId, err: String(err) });
+      }
+    }
+
     const available = MAX_CONCURRENT_TASKS - this.running.size;
     if (available <= 0) {
       this.armTimer();
@@ -172,7 +231,7 @@ export class TaskService {
     log.info("task started", { taskId: task.id, agentId: task.agentId });
 
     try {
-      const fakeJob = buildFakeJob(task);
+      const fakeJob = buildFakeJob(task, DEFAULT_TASK_TIMEOUT_MS);
       const sessionKey = `task:${task.id}`;
       const result = await runCronIsolatedAgentTurn({
         cfg,
@@ -185,6 +244,7 @@ export class TaskService {
         onAgentEvent: (evt) => {
           this.emit({ action: "progress", taskId: task.id, event: evt });
         },
+        abortSignal: abortController.signal,
       });
 
       const durationMs = Date.now() - startedAt;
@@ -313,7 +373,13 @@ export class TaskService {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /** Build a minimal CronJob-shaped object that runCronIsolatedAgentTurn accepts. */
-function buildFakeJob(task: Task) {
+function buildFakeJob(task: Task, defaultTimeoutMs: number) {
+  // Use task-specific timeout if set; fall back to the service-level default (longer than
+  // the interactive agent default to accommodate autonomous long-running tasks).
+  const resolvedTimeoutSeconds =
+    task.timeoutSeconds != null && task.timeoutSeconds > 0
+      ? task.timeoutSeconds
+      : Math.round(defaultTimeoutMs / 1000);
   return {
     id: task.id,
     agentId: task.agentId,
@@ -329,7 +395,7 @@ function buildFakeJob(task: Task) {
       message: task.message,
       model: task.model,
       thinking: task.thinking,
-      timeoutSeconds: task.timeoutSeconds,
+      timeoutSeconds: resolvedTimeoutSeconds,
       deliver: Boolean(task.originChannel && task.originTo),
       channel: task.originChannel,
       to: task.originTo,

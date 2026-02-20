@@ -159,6 +159,11 @@ export async function runCronIsolatedAgentTurn(params: {
   lane?: string;
   /** Optional callback to receive granular agent events (LLM lifecycle, tool call start/end). */
   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void;
+  /**
+   * Optional external abort signal. When aborted, the agent run is terminated and the
+   * function rejects, allowing the caller (e.g. task service) to clean up.
+   */
+  abortSignal?: AbortSignal;
 }): Promise<RunCronAgentTurnResult> {
   const isFastTestEnv = process.env.OPENCLAW_TEST_FAST === "1";
   const defaultAgentId = resolveDefaultAgentId(params.cfg);
@@ -497,6 +502,7 @@ export async function runCronIsolatedAgentTurn(params: {
           onAgentEvent: params.onAgentEvent,
           chatMode: false,
           isBackgroundTask: true,
+          abortSignal: params.abortSignal,
         });
       },
     });

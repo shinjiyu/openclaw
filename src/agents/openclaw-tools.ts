@@ -118,9 +118,8 @@ export function createOpenClawTools(options?: {
     createCronTool({
       agentSessionKey: options?.agentSessionKey,
     }),
-    ...(options?.isBackgroundTask
-      ? taskTools.filter((t) => t.name !== "tasks_create")
-      : taskTools),
+    // Background tasks get no task management tools to prevent recursive task creation/inspection.
+    ...(options?.isBackgroundTask ? [] : taskTools),
     ...(messageTool ? [messageTool] : []),
     createTtsTool({
       agentChannel: options?.agentChannel,
