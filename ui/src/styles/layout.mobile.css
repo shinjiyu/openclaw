@@ -53,12 +53,14 @@
 
   /* Topbar */
   .topbar {
-    padding: 10px 12px;
+    padding: 8px 12px;
     gap: 8px;
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: space-between;
     align-items: center;
+    /* Reserve space for iOS status bar if needed */
+    padding-top: max(8px, env(safe-area-inset-top));
   }
 
   .brand {
@@ -94,10 +96,10 @@
     display: none;
   }
 
-  /* Nav */
+  /* Nav: compact horizontal scrollable tab bar */
   .nav {
-    padding: 8px 10px;
-    gap: 4px;
+    padding: 6px 10px;
+    gap: 3px;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
@@ -120,6 +122,10 @@
     border-radius: var(--radius-md);
     white-space: nowrap;
     flex-shrink: 0;
+    /* Ensure minimum 44px height for touch */
+    min-height: 36px;
+    display: flex;
+    align-items: center;
   }
 
   /* Content */
@@ -216,7 +222,7 @@
 
   .chat-thread {
     margin-top: 8px;
-    padding: 12px 8px;
+    padding: 8px 4px;
   }
 
   .chat-msg {
@@ -228,15 +234,58 @@
     border-radius: var(--radius-md);
   }
 
+  /* Smaller avatar to reclaim horizontal space */
+  .chat-avatar {
+    width: 28px;
+    height: 28px;
+    font-size: 11px;
+    border-radius: 6px;
+  }
+
+  .chat-group {
+    gap: 8px;
+    margin-bottom: 12px;
+    margin-left: 2px;
+    margin-right: 6px;
+  }
+
+  /* Group messages constrained to remaining width after 28px avatar + 8px gap */
+  .chat-group-messages {
+    max-width: calc(100% - 36px);
+  }
+
   .chat-compose {
     gap: 8px;
   }
 
+  /* font-size: 16px prevents iOS Safari from zooming on input focus */
+  .field input,
+  .field textarea,
+  .field select {
+    font-size: 16px;
+  }
+
   .chat-compose__field textarea {
-    min-height: 60px;
-    padding: 8px 10px;
+    min-height: 44px;
+    max-height: 120px;
+    padding: 10px 12px;
     border-radius: var(--radius-md);
-    font-size: 14px;
+    font-size: 16px; /* Critical: prevents iOS zoom */
+  }
+
+  /* Bigger touch target for send + stop buttons */
+  .chat-compose .chat-compose__actions .btn {
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+
+  /* Task badge chips: larger tap area */
+  .task-badge {
+    padding: 4px 10px;
+    font-size: 11px;
   }
 
   /* Log stream */
@@ -346,14 +395,21 @@
   }
 
   .chat-compose__field textarea {
-    min-height: 52px;
-    padding: 8px 10px;
-    font-size: 13px;
+    min-height: 44px;
+    padding: 10px;
+    font-size: 16px; /* Keep 16px to prevent iOS zoom */
   }
 
   .btn {
     padding: 6px 10px;
     font-size: 11px;
+  }
+
+  .chat-compose .chat-compose__actions .btn {
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0 10px;
   }
 
   .topbar-status .pill {

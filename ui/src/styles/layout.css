@@ -9,7 +9,9 @@
   --shell-topbar-height: 56px;
   --shell-focus-duration: 200ms;
   --shell-focus-ease: var(--ease-out);
+  /* iOS Safari fallback: -webkit-fill-available respects keyboard insets */
   height: 100vh;
+  height: -webkit-fill-available;
   display: grid;
   grid-template-columns: var(--shell-nav-width) minmax(0, 1fr);
   grid-template-rows: var(--shell-topbar-height) 1fr;
@@ -31,6 +33,7 @@
 .shell--chat {
   min-height: 100vh;
   height: 100vh;
+  height: -webkit-fill-available;
   overflow: hidden;
 }
 
@@ -575,6 +578,9 @@
       "topbar"
       "nav"
       "content";
+    /* iOS notch safe areas */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 
   .nav {

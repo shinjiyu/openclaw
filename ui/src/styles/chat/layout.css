@@ -148,6 +148,8 @@
   gap: 12px;
   margin-top: auto; /* Push to bottom of flex container */
   padding: 12px 4px 4px;
+  /* iOS safe-area: keep compose above home indicator */
+  padding-bottom: max(4px, env(safe-area-inset-bottom));
   background: linear-gradient(to bottom, transparent, var(--bg) 20%);
   z-index: 10;
 }

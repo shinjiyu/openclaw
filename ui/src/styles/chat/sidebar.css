@@ -94,8 +94,12 @@
   font-size: 13px;
 }
 
-/* Mobile: Full-screen modal */
+/* Mobile: Fix min-width and full-screen modal */
 @media (max-width: 768px) {
+  .chat-main {
+    min-width: 0; /* Prevent overflow on narrow phones (was 400px) */
+  }
+
   .chat-split-container--open {
     position: fixed;
     top: 0;

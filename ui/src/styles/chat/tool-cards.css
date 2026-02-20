@@ -200,3 +200,28 @@
     transform: scale(1);
   }
 }
+
+/* Mobile: ensure tool cards are tappable and don't overflow */
+@media (max-width: 600px) {
+  .chat-tool-card {
+    padding: 10px;
+    font-size: 12px;
+  }
+
+  .chat-tool-card__title {
+    font-size: 12px;
+  }
+
+  /* Always show the "View >" link on touch (no hover on mobile) */
+  .chat-tool-card__action {
+    opacity: 1;
+  }
+
+  /* Ensure code/preview blocks don't overflow card width */
+  .chat-tool-card__preview,
+  .chat-tool-card__inline {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    word-break: break-word;
+  }
+}
