@@ -590,6 +590,10 @@ export async function runEmbeddedPiAgent(
             streamParams: params.streamParams,
             ownerNumbers: params.ownerNumbers,
             enforceFinalTag: params.enforceFinalTag,
+            // These must be forwarded explicitly so attempt.ts doesn't fall back to
+            // agents.defaults config (e.g. chatMode:true from server config).
+            chatMode: params.chatMode,
+            isBackgroundTask: params.isBackgroundTask,
           });
 
           const {
