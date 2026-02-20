@@ -192,6 +192,102 @@ function buildDocsSection(params: { docsPath?: string; isMinimal: boolean; readT
   ];
 }
 
+/**
+ * Build a simplified system prompt for chat mode sessions.
+ * In chat mode the LLM only has task management tools (tasks_create, tasks_list,
+ * tasks_cancel). The prompt instructs it to delegate work by creating tasks with
+ * rich context instead of trying to solve problems itself.
+ */
+function buildChatModeSystemPrompt(params: {
+  extraSystemPrompt?: string;
+  contextFiles?: EmbeddedContextFile[];
+  reasoningTagHint?: boolean;
+  runtimeInfo?: { agentId?: string; model?: string; channel?: string };
+}): string {
+  const lines = [
+    "You are a personal assistant running inside OpenClaw, operating in **chat mode**.",
+    "",
+    "## Your Role",
+    "You are a conversational front-end. You do NOT have tools to read files, run code, search the web, or perform any direct actions.",
+    "Your job is to understand the user's request and delegate it to a background agent by creating a task.",
+    "",
+    "## How to Handle Requests",
+    "1. When the user asks you to do something (write code, look something up, run a command, analyze files, etc.), create a **single** `tasks_create` call with a clear, self-contained instruction.",
+    "2. Include all relevant context from the conversation in the task message — the background agent has no access to this chat history.",
+    "3. After creating the task, briefly confirm to the user that you've dispatched it. Results will be delivered automatically when the task completes.",
+    "4. Do NOT attempt to answer technical questions, write code, or solve problems yourself — you lack the tools to verify or execute anything. Always delegate via `tasks_create`.",
+    "5. For simple greetings, chitchat, or questions about yourself, reply directly without creating a task.",
+    "",
+    "## Task Message Guidelines",
+    "Write the `message` for `tasks_create` as a complete, standalone instruction:",
+    "- Restate what the user wants (don't say \"the user asked…\"; phrase it as a direct instruction).",
+    "- Include any file paths, code snippets, error messages, or preferences the user mentioned.",
+    "- Include relevant conversation context that the background agent would need.",
+    "- Specify the desired output format if the user indicated one.",
+    "",
+    "## Other Tools",
+    "- `tasks_list`: use when the user asks about the status of their tasks.",
+    "- `tasks_cancel`: use when the user wants to cancel a pending task.",
+    "",
+    "## Important",
+    "- Never chain multiple `tasks_create` calls to break a single request into steps — create one comprehensive task instead.",
+    "- Never apologize for lacking tools; just create the task confidently.",
+    "- Keep your replies concise and natural.",
+    "",
+  ];
+
+  const reasoningHint = params.reasoningTagHint
+    ? [
+        "## Reasoning Format",
+        [
+          "ALL internal reasoning MUST be inside <think>...</think>.",
+          "Do not output any analysis outside <think>.",
+          "Format every reply as <think>...</think> then <final>...</final>, with no other text.",
+          "Only the final user-visible reply may appear inside <final>.",
+          "Only text inside <final> is shown to the user; everything else is discarded and never seen by the user.",
+        ].join(" "),
+        "",
+      ]
+    : [];
+  lines.push(...reasoningHint);
+
+  if (params.extraSystemPrompt?.trim()) {
+    lines.push("## Additional Context", params.extraSystemPrompt.trim(), "");
+  }
+
+  const contextFiles = (params.contextFiles ?? []).filter(
+    (file) => typeof file.path === "string" && file.path.trim().length > 0,
+  );
+  if (contextFiles.length > 0) {
+    const hasSoulFile = contextFiles.some((file) => {
+      const baseName = file.path.trim().replace(/\\/g, "/").split("/").pop() ?? "";
+      return baseName.toLowerCase() === "soul.md";
+    });
+    lines.push("# Project Context");
+    if (hasSoulFile) {
+      lines.push(
+        "If SOUL.md is present, embody its persona and tone in your replies.",
+      );
+    }
+    lines.push("");
+    for (const file of contextFiles) {
+      lines.push(`## ${file.path}`, "", file.content, "");
+    }
+  }
+
+  if (params.runtimeInfo) {
+    const parts = [
+      params.runtimeInfo.agentId ? `agent=${params.runtimeInfo.agentId}` : "",
+      params.runtimeInfo.model ? `model=${params.runtimeInfo.model}` : "",
+      params.runtimeInfo.channel ? `channel=${params.runtimeInfo.channel}` : "",
+      "mode=chat",
+    ].filter(Boolean);
+    lines.push("## Runtime", `Runtime: ${parts.join(" | ")}`);
+  }
+
+  return lines.filter(Boolean).join("\n");
+}
+
 export function buildAgentSystemPrompt(params: {
   workspaceDir: string;
   defaultThinkLevel?: ThinkLevel;
@@ -249,7 +345,17 @@ export function buildAgentSystemPrompt(params: {
     channel: string;
   };
   memoryCitationsMode?: MemoryCitationsMode;
+  /**
+   * Chat mode: when true, generate a simplified delegation-focused prompt.
+   * The LLM should only create tasks with context and confirm receipt,
+   * not attempt to solve problems itself.
+   */
+  chatMode?: boolean;
 }) {
+  if (params.chatMode) {
+    return buildChatModeSystemPrompt(params);
+  }
+
   const coreToolSummaries: Record<string, string> = {
     read: "Read file contents",
     write: "Create or overwrite files",

@@ -472,6 +472,7 @@ export async function runEmbeddedAttempt(
       userTimeFormat,
       contextFiles,
       memoryCitationsMode: params.config?.memory?.citations,
+      chatMode: resolvedChatMode,
     });
     const systemPromptReport = buildSystemPromptReport({
       source: "run",
