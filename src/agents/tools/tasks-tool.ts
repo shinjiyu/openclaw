@@ -15,7 +15,7 @@ function buildTasksCreateTool(originSessionKey?: string): AnyAgentTool {
       "Create an asynchronous background task that runs an agent turn independently.",
       "Returns immediately with a task id. The task executes in its own isolated session.",
       "Results are automatically delivered back to this conversation when the task completes.",
-      "Use tasks_status to poll for progress before the result arrives.",
+      "After creating a task, immediately reply to the user confirming receipt — do NOT poll or wait.",
     ].join(" "),
     parameters: Type.Object({
       message: Type.String({
@@ -157,12 +157,46 @@ const tasksStatusTool: AnyAgentTool = {
   },
 };
 
-export const taskTools: AnyAgentTool[] = [tasksCreateTool, tasksListTool, tasksStatusTool];
+/** Agent tool: cancel a queued or running background task. */
+const tasksCancelTool: AnyAgentTool = {
+  name: "tasks_cancel",
+  label: "Cancel Task",
+  description:
+    "Cancel a queued or running background task by id. Returns whether the cancellation succeeded.",
+  parameters: Type.Object({
+    id: Type.String({ description: "The task id to cancel." }),
+  }),
+  execute: async (_toolCallId: string, params: unknown) => {
+    const p = params as { id: string };
+    const result = await callGatewayTool<{ cancelled: boolean }>("tasks.cancel", {}, { id: p.id });
+    const ok = result?.cancelled ?? false;
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: ok ? `Task ${p.id} cancelled.` : `Task ${p.id} not found or not cancellable.`,
+        },
+      ],
+      details: { cancelled: ok },
+    };
+  },
+};
+
+export const taskTools: AnyAgentTool[] = [
+  tasksCreateTool,
+  tasksListTool,
+  tasksStatusTool,
+  tasksCancelTool,
+];
 
 /**
  * Build task tools for chat mode. The tasks_create tool is pre-configured with the chat
  * session key so task completions are automatically pushed back to the originating session.
+ *
+ * Only tasks_create, tasks_list, and tasks_cancel are included; tasks_status is intentionally
+ * excluded because task completions auto-push results back to this session via originSessionKey.
+ * Including tasks_status causes the LLM to waste rounds polling, delaying the reply.
  */
 export function buildChatModeTaskTools(originSessionKey?: string): AnyAgentTool[] {
-  return [buildTasksCreateTool(originSessionKey), tasksListTool, tasksStatusTool];
+  return [buildTasksCreateTool(originSessionKey), tasksListTool, tasksCancelTool];
 }

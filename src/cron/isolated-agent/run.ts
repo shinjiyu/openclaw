@@ -495,6 +495,7 @@ export async function runCronIsolatedAgentTurn(params: {
           requireExplicitMessageTarget: true,
           disableMessageTool: deliveryRequested,
           onAgentEvent: params.onAgentEvent,
+          chatMode: false,
         });
       },
     });

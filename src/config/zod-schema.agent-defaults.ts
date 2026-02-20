@@ -139,6 +139,7 @@ export const AgentDefaultsSchema = z
       ])
       .optional(),
     heartbeat: HeartbeatSchema,
+    chatMode: z.boolean().optional(),
     maxConcurrent: z.number().int().positive().optional(),
     subagents: z
       .object({
