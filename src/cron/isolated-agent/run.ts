@@ -569,6 +569,18 @@ export async function runCronIsolatedAgentTurn(params: {
     }
     await persistSessionEntry();
   }
+  // If every non-empty payload carries isError:true (e.g. LLM timeout, context overflow),
+  // surface it as a hard error so callers (task service etc.) can retry rather than treating
+  // the run as a successful completion.
+  const errorPayload = payloads.find((p) => p.isError && p.text?.trim());
+  if (errorPayload && payloads.every((p) => p.isError || !p.text?.trim())) {
+    return withRunSession({
+      status: "error",
+      error: errorPayload.text ?? "agent run failed with error payload",
+      ...telemetry,
+    });
+  }
+
   const firstText = payloads[0]?.text ?? "";
   let summary = pickSummaryFromPayloads(payloads) ?? pickSummaryFromOutput(firstText);
   let outputText = pickLastNonEmptyTextFromPayloads(payloads);

@@ -27,6 +27,8 @@ export type Task = {
   /** Last non-empty text output from the agent. */
   result?: string;
   error?: string;
+  /** Number of times this task has been retried (0 = first attempt). */
+  retryCount?: number;
 };
 
 export type TaskCreate = Pick<

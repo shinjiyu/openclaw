@@ -32,6 +32,11 @@ const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
  */
 const WATCHDOG_GRACE_MS = 60_000;
 
+/**
+ * How many times to automatically retry a task that times out before marking it failed.
+ */
+const MAX_TASK_RETRIES = 2;
+
 export type TaskServiceDeps = {
   deps: CliDeps;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
@@ -46,6 +51,8 @@ type RunningEntry = {
 export class TaskService {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = new Map<string, RunningEntry>();
+  /** Tasks whose abortController has already been triggered by the watchdog. */
+  private abortTriggered = new Set<string>();
   private stopped = false;
   private serviceDeps: TaskServiceDeps;
 
@@ -186,12 +193,13 @@ export class TaskService {
         const timeoutMs =
           task.timeoutSeconds != null ? task.timeoutSeconds * 1000 : DEFAULT_TASK_TIMEOUT_MS;
         const elapsed = now - task.startedAt;
-        if (elapsed > timeoutMs + WATCHDOG_GRACE_MS) {
+        if (elapsed > timeoutMs + WATCHDOG_GRACE_MS && !this.abortTriggered.has(taskId)) {
           log.warn("watchdog: aborting task that exceeded timeout", {
             taskId,
             elapsed,
             timeoutMs,
           });
+          this.abortTriggered.add(taskId);
           entry.abortController.abort(new Error("watchdog timeout exceeded"));
         }
       } catch (err) {
@@ -252,6 +260,13 @@ export class TaskService {
       // Read token usage from the isolated session.
       const tokenUsage = readSessionTokens(cfg, task.agentId, sessionKey);
 
+      if (result.status === "error" && isRetriableError(result.error)) {
+        if (shouldRetry(task)) {
+          void this.requeueForRetry(task, storePath, result.error);
+          return;
+        }
+      }
+
       const finalStatus = result.status === "ok" ? "completed" : "failed";
       const patch: Partial<Task> = {
         status: finalStatus,
@@ -272,7 +287,7 @@ export class TaskService {
       });
       log.info("task finished", { taskId: task.id, status: finalStatus, durationMs });
 
-      // Push completion summary back to the originating chat session (Option C).
+      // Push completion summary back to the originating chat session.
       if (task.originSessionKey) {
         void this.pushTaskCompletionToChat(task, {
           status: finalStatus,
@@ -284,6 +299,12 @@ export class TaskService {
     } catch (err) {
       const durationMs = Date.now() - startedAt;
       const errorMsg = String(err);
+
+      if (isRetriableError(errorMsg) && shouldRetry(task)) {
+        void this.requeueForRetry(task, storePath, errorMsg);
+        return;
+      }
+
       updateTask(storePath, task.id, {
         status: "failed",
         completedAt: Date.now(),
@@ -307,7 +328,31 @@ export class TaskService {
       }
     } finally {
       this.running.delete(task.id);
+      this.abortTriggered.delete(task.id);
     }
+  }
+
+  /** Re-queue a task for retry after a retriable failure (e.g. timeout). */
+  private async requeueForRetry(task: Task, storePath: string, error: string | undefined) {
+    const retryCount = (task.retryCount ?? 0) + 1;
+    log.info("task timed out — requeueing for retry", {
+      taskId: task.id,
+      attempt: retryCount,
+      maxRetries: MAX_TASK_RETRIES,
+      error,
+    });
+    updateTask(storePath, task.id, {
+      status: "queued",
+      startedAt: undefined,
+      retryCount,
+    });
+    this.emit({
+      action: "updated",
+      taskId: task.id,
+      patch: { status: "queued", retryCount },
+    });
+    // Wake the worker quickly so the retry is picked up without delay.
+    this.armTimer(500);
   }
 
   private emit(evt: TaskEvent) {
@@ -371,6 +416,30 @@ export class TaskService {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Returns true when an error message indicates a transient failure that can be retried
+ * (LLM timeout, watchdog abort, or network timeout).
+ */
+function isRetriableError(error: string | undefined): boolean {
+  if (!error) {
+    return false;
+  }
+  const lower = error.toLowerCase();
+  return (
+    lower.includes("timed out") ||
+    lower.includes("timeout") ||
+    lower.includes("watchdog") ||
+    lower.includes("request timed out")
+  );
+}
+
+/**
+ * Returns true if the task has not yet exhausted its retry budget.
+ */
+function shouldRetry(task: Task): boolean {
+  return (task.retryCount ?? 0) < MAX_TASK_RETRIES;
+}
 
 /** Build a minimal CronJob-shaped object that runCronIsolatedAgentTurn accepts. */
 function buildFakeJob(task: Task, defaultTimeoutMs: number) {
