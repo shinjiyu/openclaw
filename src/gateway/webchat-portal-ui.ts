@@ -641,14 +641,29 @@ function connectWs() {
 
   ws.addEventListener('open', () => {
     // Send connect handshake with portal token
+    const connectId = genId();
+    pendingCallbacks.set(connectId, (msg) => {
+      if (msg.ok) {
+        setConnected(true);
+        wsReady = true;
+        enableInput(true);
+        loadHistory();
+        startTaskPoll();
+      } else {
+        console.error('WebSocket connect rejected:', msg.error);
+        ws.close();
+      }
+    });
     const frame = {
+      type: 'req',
       method: 'connect',
-      id: genId(),
+      id: connectId,
       params: {
-        protocol: 1,
+        minProtocol: 1,
+        maxProtocol: 3,
         auth: { token },
         client: {
-          id: 'openclaw-webchat-portal',
+          id: 'webchat',
           displayName: 'WebChat Portal',
           version: '1.0.0',
           platform: 'web',
@@ -681,45 +696,52 @@ function connectWs() {
 }
 
 function handleWsMessage(msg) {
-  // Response to a call
-  if (msg.id && pendingCallbacks.has(msg.id)) {
+  // type:"res" — response to a pending call
+  if (msg.type === 'res' && msg.id && pendingCallbacks.has(msg.id)) {
     const cb = pendingCallbacks.get(msg.id);
     pendingCallbacks.delete(msg.id);
     cb(msg);
     return;
   }
 
-  // Server events
+  // type:"event" — server-push events
+  if (msg.type !== 'event' || !msg.event) return;
   const ev = msg.event;
-  if (!ev) return;
+  const p = msg.payload || {};
 
-  if (ev === 'chat.connected') {
-    setConnected(true);
-    wsReady = true;
-    enableInput(true);
-    loadHistory();
-    startTaskPoll();
+  // ── "chat" event ──
+  // payload: {runId, sessionKey, seq, state, message?, errorMessage?}
+  // state: "delta" | "final" | "aborted" | "error"
+  if (ev === 'chat') {
+    if (p.state === 'delta') {
+      const text = extractText(p.message?.content);
+      if (text) handleStreamReplace(text);
+    } else if (p.state === 'final') {
+      finishAssistantReply(p.message);
+    } else if (p.state === 'aborted') {
+      finishAssistantReply(p.message);
+      appendSystemMsg('Run aborted.');
+    } else if (p.state === 'error') {
+      finalizeStream();
+      appendSystemMsg('⚠ ' + (p.errorMessage || 'An error occurred.'));
+      enableInput(true);
+    }
     return;
   }
 
-  if (ev === 'chat.stream') {
-    handleStream(msg.payload);
+  // ── "agent" event ──
+  // payload: {runId, seq, stream, ts, data, sessionKey?}
+  // stream "assistant": data.text (cumulative), data.delta (incremental)
+  if (ev === 'agent') {
+    if (p.stream === 'assistant' && p.data) {
+      const delta = p.data.delta || '';
+      if (delta) handleStreamAppend(delta);
+    }
     return;
   }
 
-  if (ev === 'chat.done' || ev === 'chat.end') {
-    finalizeStream();
-    return;
-  }
-
-  if (ev === 'chat.error') {
-    finalizeStream();
-    const errText = msg.payload?.message || 'An error occurred.';
-    appendSystemMsg('⚠ ' + errText);
-    return;
-  }
-
-  if (ev === 'tasks.update' || ev === 'tasks.created' || ev === 'tasks.started' || ev === 'tasks.finished') {
+  // ── "task" event — refresh task list
+  if (ev === 'task') {
     void loadTasks();
     return;
   }
@@ -729,7 +751,7 @@ function call(method, params) {
   return new Promise((resolve) => {
     const id = genId();
     pendingCallbacks.set(id, resolve);
-    ws.send(JSON.stringify({ method, id, params }));
+    ws.send(JSON.stringify({ type: 'req', method, id, params }));
     // Timeout after 30 s
     setTimeout(() => {
       if (pendingCallbacks.has(id)) {
@@ -751,9 +773,11 @@ function enableInput(ok) {
 
 // ── Chat history ─────────────────────────────────────────────
 async function loadHistory() {
-  const res = await call('chat.history', { limit: 80 });
-  if (res.error || !res.result) return;
-  const messages = res.result.messages || [];
+  const sessionKey = 'portal:' + (username || 'anon');
+  const res = await call('chat.history', { sessionKey, limit: 80 });
+  const data = res.payload;
+  if (!res.ok || res.error || !data) return;
+  const messages = data.messages || [];
   chatMessages.innerHTML = '';
   for (const m of messages) {
     if (m.role === 'user') {
@@ -791,15 +815,17 @@ async function sendMessage() {
   showThinking();
 
   const idempotencyKey = genId();
+  const sessionKey = 'portal:' + (username || 'anon');
   const res = await call('chat.send', {
+    sessionKey,
     message: text,
     idempotencyKey,
   });
 
-  if (res.error) {
+  if (!res.ok || res.error) {
     hideThinking();
     enableInput(true);
-    appendSystemMsg('⚠ ' + (res.error.message || 'Send failed'));
+    appendSystemMsg('⚠ ' + (res.error?.message || 'Send failed'));
   }
   // response/streaming handled via events
 }
@@ -839,11 +865,9 @@ function hideThinking() {
   if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 }
 
-function handleStream(payload) {
+// Ensure a streaming bubble exists; returns the .msg-bubble element.
+function ensureStreamBubble() {
   hideThinking();
-  const text = payload?.text || payload?.delta || '';
-  if (!text) return;
-
   if (!streaming || !streamEl) {
     streaming = true;
     streamEl = document.createElement('div');
@@ -854,25 +878,50 @@ function handleStream(payload) {
     streamEl.appendChild(bubble);
     chatMessages.appendChild(streamEl);
   }
+  return streamEl.querySelector('.msg-bubble');
+}
 
-  const bubble = streamEl.querySelector('.msg-bubble');
-  bubble.dataset.raw += text;
+// Replace full text (used by chat "delta" events which carry cumulative text).
+function handleStreamReplace(fullText) {
+  const bubble = ensureStreamBubble();
+  bubble.dataset.raw = fullText;
+  bubble.textContent = fullText;
+  scrollBottom(true);
+}
+
+// Append incremental text (used by agent "assistant" stream events).
+function handleStreamAppend(delta) {
+  const bubble = ensureStreamBubble();
+  bubble.dataset.raw += delta;
   bubble.textContent = bubble.dataset.raw;
   scrollBottom(true);
+}
+
+// Finish the assistant reply: finalize stream, show final message if present.
+function finishAssistantReply(message) {
+  if (streaming && streamEl) {
+    // Stream was active — just finalize the existing bubble.
+    finalizeStream();
+  } else if (message) {
+    // No stream was active — render the final message directly.
+    hideThinking();
+    const text = extractText(message.content);
+    if (text) appendMsg('assistant', text, true);
+  } else {
+    hideThinking();
+  }
+  enableInput(true);
+  void loadTasks();
 }
 
 function finalizeStream() {
   hideThinking();
   if (streamEl) {
     const bubble = streamEl.querySelector('.msg-bubble');
-    if (bubble) {
-      bubble.classList.remove('cursor-blink');
-    }
+    if (bubble) bubble.classList.remove('cursor-blink');
     streamEl = null;
   }
   streaming = false;
-  enableInput(true);
-  void loadTasks();
 }
 
 // ── Message rendering ────────────────────────────────────────
@@ -920,8 +969,8 @@ function clearTaskPoll() {
 async function loadTasks() {
   if (!wsReady || !ws || ws.readyState !== 1) return;
   const res = await call('tasks.status', {});
-  if (res.error || !res.result) return;
-  const status = res.result;
+  const status = res.payload;
+  if (!res.ok || res.error || !status) return;
   tasks = [
     ...(status.running || []),
     ...(status.queued || []),

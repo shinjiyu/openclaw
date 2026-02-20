@@ -512,6 +512,10 @@ export function attachGatewayWsMessageHandler(params: {
             return true;
           }
           clearUnboundScopes();
+          if (portalUser) {
+            scopes = ["operator.read", "operator.write"];
+            connectParams.scopes = scopes;
+          }
           const canSkipDevice = sharedAuthOk || Boolean(portalUser);
 
           if (isControlUi && !controlUiAuthPolicy.allowBypass) {
