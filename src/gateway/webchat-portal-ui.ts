@@ -316,41 +316,49 @@ export function buildPortalHtml(opts: {
 
     /* ── Tasks panel ────────────────────────────────────────── */
     .tasks-panel {
-      width: 340px;
+      width: 380px;
       flex-shrink: 0;
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
     .tasks-header {
-      padding: 0.85rem 1.25rem 0.65rem;
+      padding: 0 1.25rem;
       border-bottom: 1px solid var(--border);
       display: flex;
-      align-items: center;
-      justify-content: space-between;
+      align-items: stretch;
       background: var(--surface);
       flex-shrink: 0;
+      gap: 0;
     }
-    .tasks-header h2 {
-      font-size: 0.85rem;
+    .tab-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      font-size: 0.8rem;
       font-weight: 600;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    .tasks-stats {
+      padding: 0.7rem 0.6rem 0.55rem;
+      cursor: pointer;
+      letter-spacing: 0.03em;
+      transition: color 0.15s, border-color 0.15s;
       display: flex;
-      gap: 0.5rem;
+      align-items: center;
+      gap: 0.35rem;
     }
-    .stat-pill {
-      background: var(--surface2);
-      border: 1px solid var(--border);
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-badge {
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.08rem 0.4rem;
       border-radius: 99px;
-      padding: 0.15rem 0.55rem;
-      font-size: 0.72rem;
-      color: var(--muted);
+      min-width: 16px;
+      text-align: center;
     }
-    .stat-pill.active { color: var(--accent); border-color: var(--accent); }
+    .tab-badge.muted { background: var(--surface2); color: var(--muted); }
 
     .tasks-list {
       flex: 1;
@@ -372,6 +380,7 @@ export function buildPortalHtml(opts: {
       gap: 0.4rem;
       cursor: default;
     }
+    .task-card.running { border-color: rgba(108,125,255,0.35); }
     .task-card-top {
       display: flex;
       align-items: center;
@@ -410,6 +419,33 @@ export function buildPortalHtml(opts: {
       display: flex;
       gap: 0.5rem;
       flex-wrap: wrap;
+      align-items: center;
+    }
+    .task-meta .trigger-tag {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 0.05rem 0.4rem;
+      border-radius: 99px;
+      font-size: 0.68rem;
+    }
+    .task-activity {
+      font-size: 0.75rem;
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.3rem 0;
+    }
+    .task-activity .activity-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+    .task-activity .llm-time {
+      color: var(--warn);
+      font-weight: 600;
     }
     .task-result {
       font-size: 0.8rem;
@@ -500,14 +536,15 @@ export function buildPortalHtml(opts: {
     <!-- Tasks -->
     <div class="tasks-panel">
       <div class="tasks-header">
-        <h2>Background Tasks</h2>
-        <div class="tasks-stats">
-          <span class="stat-pill active" id="tasks-running-pill" style="display:none;"></span>
-          <span class="stat-pill" id="tasks-queued-pill" style="display:none;"></span>
-        </div>
+        <button class="tab-btn active" id="tab-active" data-tab="active">
+          Active <span class="tab-badge" id="badge-active" style="display:none;">0</span>
+        </button>
+        <button class="tab-btn" id="tab-history" data-tab="history">
+          History <span class="tab-badge muted" id="badge-history" style="display:none;">0</span>
+        </button>
       </div>
       <div class="tasks-list" id="tasks-list">
-        <div class="tasks-empty">No tasks yet</div>
+        <div class="tasks-empty">No active tasks</div>
       </div>
     </div>
   </div>
@@ -532,6 +569,9 @@ let streaming = false;
 let streamEl = null;
 let tasks = [];
 let taskPollTimer = null;
+let taskTab = 'active';
+let taskProgress = {};  // taskId → { activity, llmStartedAt, lastLlmMs }
+let durationTimer = null;
 
 // ── DOM refs ─────────────────────────────────────────────────
 const loginView = document.getElementById('login-view');
@@ -548,8 +588,10 @@ const chatMessages = document.getElementById('chat-messages');
 const chatTextarea = document.getElementById('chat-textarea');
 const sendBtn = document.getElementById('send-btn');
 const tasksList = document.getElementById('tasks-list');
-const tasksRunningPill = document.getElementById('tasks-running-pill');
-const tasksQueuedPill = document.getElementById('tasks-queued-pill');
+const tabActive = document.getElementById('tab-active');
+const tabHistory = document.getElementById('tab-history');
+const badgeActive = document.getElementById('badge-active');
+const badgeHistory = document.getElementById('badge-history');
 
 // ── Utilities ────────────────────────────────────────────────
 function escEl(s) {
@@ -740,9 +782,9 @@ function handleWsMessage(msg) {
     return;
   }
 
-  // ── "task" event — refresh task list
+  // ── "task" event — handle task lifecycle + progress
   if (ev === 'task') {
-    void loadTasks();
+    handleTaskEvent(p);
     return;
   }
 }
@@ -956,14 +998,40 @@ function scrollBottom(smooth) {
 }
 
 // ── Tasks ────────────────────────────────────────────────────
+
+// Tab switching
+tabActive.addEventListener('click', () => switchTab('active'));
+tabHistory.addEventListener('click', () => switchTab('history'));
+
+function switchTab(tab) {
+  taskTab = tab;
+  tabActive.className = 'tab-btn' + (tab === 'active' ? ' active' : '');
+  tabHistory.className = 'tab-btn' + (tab === 'history' ? ' active' : '');
+  renderTasks();
+}
+
 function startTaskPoll() {
   clearTaskPoll();
   void loadTasks();
-  taskPollTimer = setInterval(() => void loadTasks(), 5000);
+  taskPollTimer = setInterval(() => void loadTasks(), 8000);
+  startDurationTimer();
 }
 
 function clearTaskPoll() {
   if (taskPollTimer) { clearInterval(taskPollTimer); taskPollTimer = null; }
+  if (durationTimer) { clearInterval(durationTimer); durationTimer = null; }
+}
+
+function startDurationTimer() {
+  if (durationTimer) return;
+  durationTimer = setInterval(() => {
+    const runningTasks = tasks.filter(t => t.status === 'running' || t.status === 'queued');
+    if (runningTasks.length === 0) return;
+    document.querySelectorAll('.task-live-duration').forEach(el => {
+      const startedAt = parseInt(el.dataset.startedAt);
+      if (startedAt) el.textContent = formatDuration(Date.now() - startedAt);
+    });
+  }, 1000);
 }
 
 async function loadTasks() {
@@ -976,62 +1044,161 @@ async function loadTasks() {
     ...(status.queued || []),
     ...(status.recent || []),
   ];
+  updateBadges(status);
   renderTasks();
-  updateTaskPills(status);
 }
 
-function updateTaskPills(status) {
-  const running = status.runningCount || 0;
-  const queued = status.queuedCount || 0;
-  if (running > 0) {
-    tasksRunningPill.textContent = running + ' running';
-    tasksRunningPill.style.display = 'inline-block';
-  } else {
-    tasksRunningPill.style.display = 'none';
+function handleTaskEvent(evt) {
+  const id = evt.taskId;
+  if (!id) return;
+
+  if (evt.action === 'progress' && evt.event) {
+    const stream = evt.event.stream;
+    const data = evt.event.data || {};
+    if (!taskProgress[id]) taskProgress[id] = {};
+    const tp = taskProgress[id];
+
+    if (stream === 'lifecycle') {
+      if (data.phase === 'llm-start') {
+        tp.llmStartedAt = Date.now();
+        tp.activity = 'Calling LLM…';
+      } else if (data.phase === 'llm-end') {
+        tp.lastLlmMs = tp.llmStartedAt ? Date.now() - tp.llmStartedAt : (data.durationMs || 0);
+        tp.llmStartedAt = null;
+        tp.activity = 'LLM responded';
+      } else if (data.phase === 'tool-start') {
+        tp.activity = 'Tool: ' + (data.toolName || data.name || '…');
+        tp.llmStartedAt = null;
+      } else if (data.phase === 'tool-end') {
+        tp.activity = null;
+      }
+    } else if (stream === 'tool') {
+      tp.activity = 'Tool: ' + (data.name || data.toolName || '…');
+    } else if (stream === 'assistant') {
+      tp.activity = 'Generating…';
+    }
+
+    updateTaskActivityUI(id);
+    return;
   }
-  if (queued > 0) {
-    tasksQueuedPill.textContent = queued + ' queued';
-    tasksQueuedPill.style.display = 'inline-block';
+
+  if (evt.action === 'created' || evt.action === 'started' || evt.action === 'finished') {
+    void loadTasks();
+    if (evt.action === 'finished') {
+      delete taskProgress[id];
+    }
+  }
+}
+
+function updateTaskActivityUI(taskId) {
+  const el = document.getElementById('task-activity-' + taskId);
+  if (!el) { renderTasks(); return; }
+  const tp = taskProgress[taskId] || {};
+  if (tp.activity) {
+    let html = '<span class="activity-dot"></span> ' + escEl(tp.activity);
+    if (tp.llmStartedAt) {
+      html += ' <span class="llm-time">' + formatDuration(Date.now() - tp.llmStartedAt) + '</span>';
+    } else if (tp.lastLlmMs) {
+      html += ' <span class="llm-time">' + formatDuration(tp.lastLlmMs) + '</span>';
+    }
+    el.innerHTML = html;
+    el.style.display = 'flex';
   } else {
-    tasksQueuedPill.style.display = 'none';
+    el.style.display = 'none';
+  }
+}
+
+function updateBadges(status) {
+  const activeN = (status.runningCount || 0) + (status.queuedCount || 0);
+  const historyN = status.recentCount || 0;
+  if (activeN > 0) {
+    badgeActive.textContent = activeN;
+    badgeActive.style.display = 'inline-block';
+  } else {
+    badgeActive.style.display = 'none';
+  }
+  if (historyN > 0) {
+    badgeHistory.textContent = historyN;
+    badgeHistory.style.display = 'inline-block';
+  } else {
+    badgeHistory.style.display = 'none';
   }
 }
 
 function renderTasks() {
-  if (tasks.length === 0) {
-    tasksList.innerHTML = '<div class="tasks-empty">No tasks yet</div>';
+  const activeTasks = tasks.filter(t => t.status === 'running' || t.status === 'queued');
+  const historyTasks = tasks.filter(t => t.status !== 'running' && t.status !== 'queued');
+  const display = taskTab === 'active' ? activeTasks : historyTasks;
+
+  if (display.length === 0) {
+    const emptyMsg = taskTab === 'active' ? 'No active tasks' : 'No task history';
+    tasksList.innerHTML = '<div class="tasks-empty">' + emptyMsg + '</div>';
     return;
   }
-  tasksList.innerHTML = tasks.map(renderTaskCard).join('');
+  tasksList.innerHTML = display.map(renderTaskCard).join('');
+}
+
+function resolveTrigger(task) {
+  if (task.originChannel) return task.originChannel;
+  if (task.originSessionKey) {
+    const sk = task.originSessionKey;
+    if (sk.startsWith('portal:')) return 'portal';
+    if (sk.includes(':')) return sk.split(':')[0];
+    return sk;
+  }
+  return 'heartbeat';
 }
 
 function renderTaskCard(task) {
-  const dotClass = task.status;
+  const isActive = task.status === 'running' || task.status === 'queued';
   const duration = task.completedAt && task.startedAt
     ? formatDuration(task.completedAt - task.startedAt)
-    : task.startedAt ? formatDuration(Date.now() - task.startedAt) : '';
+    : '';
   const ts = formatRelTime(task.createdAt);
   const tokens = task.totalTokens ? task.totalTokens.toLocaleString() + ' tok' : '';
+  const trigger = resolveTrigger(task);
+
+  let activityHtml = '';
+  if (isActive) {
+    const tp = taskProgress[task.id] || {};
+    let actContent = '';
+    if (tp.activity) {
+      actContent = '<span class="activity-dot"></span> ' + escEl(tp.activity);
+      if (tp.llmStartedAt) {
+        actContent += ' <span class="llm-time">' + formatDuration(Date.now() - tp.llmStartedAt) + '</span>';
+      } else if (tp.lastLlmMs) {
+        actContent += ' <span class="llm-time">' + formatDuration(tp.lastLlmMs) + '</span>';
+      }
+    }
+    activityHtml = '<div class="task-activity" id="task-activity-' + escEl(task.id) + '" style="' + (actContent ? '' : 'display:none;') + '">' + actContent + '</div>';
+  }
 
   let resultHtml = '';
-  if (task.result) {
+  if (!isActive && task.result) {
     resultHtml = '<div class="task-result">' + escEl(task.result.slice(0, 400)) + (task.result.length > 400 ? '…' : '') + '</div>';
-  } else if (task.error) {
+  } else if (!isActive && task.error) {
     resultHtml = '<div class="task-result error">' + escEl(task.error.slice(0, 300)) + '</div>';
   }
 
+  const liveDuration = isActive && task.startedAt
+    ? '<span class="task-live-duration" data-started-at="' + task.startedAt + '">' + formatDuration(Date.now() - task.startedAt) + '</span>'
+    : '';
+
   return \`
-    <div class="task-card">
+    <div class="task-card\${isActive ? ' running' : ''}">
       <div class="task-card-top">
-        <span class="task-status-dot \${escEl(dotClass)}"></span>
+        <span class="task-status-dot \${escEl(task.status)}"></span>
         <span class="task-msg">\${escEl(task.message)}</span>
       </div>
       <div class="task-meta">
         <span>\${escEl(task.status)}</span>
-        \${duration ? '<span>' + escEl(duration) + '</span>' : ''}
+        <span class="trigger-tag">\${escEl(trigger)}</span>
+        \${isActive && liveDuration ? liveDuration : ''}
+        \${!isActive && duration ? '<span>' + escEl(duration) + '</span>' : ''}
         \${ts ? '<span>' + escEl(ts) + '</span>' : ''}
         \${tokens ? '<span>' + escEl(tokens) + '</span>' : ''}
       </div>
+      \${activityHtml}
       \${resultHtml}
     </div>
   \`;
