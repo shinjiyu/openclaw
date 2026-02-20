@@ -200,7 +200,11 @@ export class TaskService {
             timeoutMs,
           });
           this.abortTriggered.add(taskId);
-          entry.abortController.abort(new Error("watchdog timeout exceeded"));
+          // Use TimeoutError name so attempt.ts onAbort classifies this as a timeout
+          // (isTimeoutError checks for name === "TimeoutError").
+          const watchdogErr = new Error("watchdog timeout exceeded");
+          watchdogErr.name = "TimeoutError";
+          entry.abortController.abort(watchdogErr);
         }
       } catch (err) {
         log.warn("watchdog check error", { taskId, err: String(err) });

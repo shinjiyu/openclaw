@@ -569,7 +569,19 @@ export async function runCronIsolatedAgentTurn(params: {
     }
     await persistSessionEntry();
   }
-  // If every non-empty payload carries isError:true (e.g. LLM timeout, context overflow),
+  // If the run was cut short by the internal timeout, surface it as an error regardless of
+  // whether partial output was produced — prevents truncated runs from looking like successes.
+  if (runResult.meta?.timedOut) {
+    const timeoutErrText =
+      payloads.find((p) => p.isError && p.text?.trim())?.text ??
+      "Request timed out before a response was generated.";
+    return withRunSession({
+      status: "error",
+      error: timeoutErrText,
+      ...telemetry,
+    });
+  }
+  // If every non-empty payload carries isError:true (e.g. context overflow),
   // surface it as a hard error so callers (task service etc.) can retry rather than treating
   // the run as a successful completion.
   const errorPayload = payloads.find((p) => p.isError && p.text?.trim());
