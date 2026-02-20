@@ -572,6 +572,26 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        webchatPortal: z
+          .object({
+            enabled: z.boolean().optional(),
+            basePath: z.string().optional(),
+            tokenTtlHours: z.number().int().positive().optional(),
+            chatMode: z.boolean().optional(),
+            users: z
+              .array(
+                z
+                  .object({
+                    username: z.string().min(1),
+                    password: z.string().min(1).register(sensitive),
+                    agentId: z.string().optional(),
+                  })
+                  .strict(),
+              )
+              .optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

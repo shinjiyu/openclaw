@@ -389,6 +389,17 @@ export function attachGatewayWsMessageHandler(params: {
         });
         const device = controlUiAuthPolicy.device;
 
+        // Check if this is a WebChat Portal token (issued by POST /portal/api/auth).
+        let portalUser: string | undefined;
+        const rawAuthToken = connectParams.auth?.token ?? "";
+        if (rawAuthToken && configSnapshot.gateway?.webchatPortal?.enabled) {
+          const { gatewayPortalTokenStore } = await import("../../webchat-portal-auth.js");
+          const portalEntry = gatewayPortalTokenStore.verify(rawAuthToken);
+          if (portalEntry) {
+            portalUser = portalEntry.username;
+          }
+        }
+
         const resolveAuthState = async () => {
           const hasDeviceTokenCandidate = Boolean(connectParams.auth?.token && device);
           let nextAuthResult: GatewayAuthResult = await authorizeWsControlUiGatewayConnect({
@@ -450,7 +461,18 @@ export function attachGatewayWsMessageHandler(params: {
           };
         };
 
-        let { authResult, authOk, authMethod, sharedAuthOk } = await resolveAuthState();
+        let authResult: GatewayAuthResult;
+        let authOk: boolean;
+        let authMethod: string;
+        let sharedAuthOk: boolean;
+        if (portalUser) {
+          authResult = { ok: true, method: "token", user: portalUser };
+          authOk = true;
+          authMethod = "token";
+          sharedAuthOk = true;
+        } else {
+          ({ authResult, authOk, authMethod, sharedAuthOk } = await resolveAuthState());
+        }
         const rejectUnauthorized = (failedAuth: GatewayAuthResult) => {
           markHandshakeFailure("unauthorized", {
             authMode: resolvedAuth.mode,
@@ -490,7 +512,7 @@ export function attachGatewayWsMessageHandler(params: {
             return true;
           }
           clearUnboundScopes();
-          const canSkipDevice = sharedAuthOk;
+          const canSkipDevice = sharedAuthOk || Boolean(portalUser);
 
           if (isControlUi && !controlUiAuthPolicy.allowBypass) {
             const errorMessage =
@@ -954,6 +976,7 @@ export function attachGatewayWsMessageHandler(params: {
           clientIp: reportedClientIp,
           canvasCapability,
           canvasCapabilityExpiresAtMs,
+          portalUser,
         };
         setClient(nextClient);
         setHandshakeState("connected");

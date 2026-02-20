@@ -21,6 +21,11 @@ import { safeEqualSecret } from "../security/secret-equal.js";
 import { handleSlackHttpRequest } from "../slack/http/index.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import {
+  createWebchatPortalRequestHandler,
+  resolvePortalBasePath,
+} from "./webchat-portal-http.js";
+import {
+  authorizeGatewayConnect,
   authorizeHttpGatewayConnect,
   isLocalDirectRequest,
   type GatewayAuthResult,
@@ -473,6 +478,10 @@ export function createGatewayHttpServer(opts: {
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
   tlsOptions?: TlsOptions;
+  /** Gateway bind host (used to derive portal request handler context). */
+  bindHost?: string;
+  /** Gateway port (used to derive portal request handler context). */
+  port?: number;
 }): HttpServer {
   const {
     canvasHost,
@@ -605,6 +614,26 @@ export function createGatewayHttpServer(opts: {
           return;
         }
       }
+      // ── WebChat Portal ──────────────────────────────────────
+      const portalCfg = configSnapshot.gateway?.webchatPortal;
+      if (portalCfg?.enabled && (portalCfg.users?.length ?? 0) > 0) {
+        const portalBasePath = resolvePortalBasePath(portalCfg);
+        if (
+          requestPath === portalBasePath ||
+          requestPath === `${portalBasePath}/` ||
+          requestPath.startsWith(`${portalBasePath}/`)
+        ) {
+          const portalHandler = createWebchatPortalRequestHandler({
+            cfg: portalCfg,
+            port: opts.port ?? 18789,
+            bindHost: opts.bindHost ?? "localhost",
+          });
+          if (await portalHandler(req, res)) {
+            return;
+          }
+        }
+      }
+
       if (controlUiEnabled) {
         if (
           handleControlUiAvatarRequest(req, res, {

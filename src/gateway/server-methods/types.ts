@@ -19,6 +19,8 @@ export type GatewayClient = {
   connect: ConnectParams;
   connId?: string;
   clientIp?: string;
+  /** Set for WebChat Portal connections; identifies the authenticated portal user. */
+  portalUser?: string;
 };
 
 export type RespondFn = (

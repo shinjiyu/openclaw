@@ -9,4 +9,9 @@ export type GatewayWsClient = {
   clientIp?: string;
   canvasCapability?: string;
   canvasCapabilityExpiresAtMs?: number;
+  /**
+   * Set when the connection was authenticated via the WebChat Portal.
+   * Contains the portal username for per-user session isolation and chatmode enforcement.
+   */
+  portalUser?: string;
 };

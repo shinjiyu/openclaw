@@ -562,7 +562,7 @@ function broadcastChatError(params: {
 }
 
 export const chatHandlers: GatewayRequestHandlers = {
-  "chat.history": async ({ params, respond, context }) => {
+  "chat.history": async ({ params, respond, context, client }) => {
     if (!validateChatHistoryParams(params)) {
       respond(
         false,
@@ -574,10 +574,16 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const { sessionKey, limit } = params as {
+    const rawHistoryParams = params as {
       sessionKey: string;
       limit?: number;
     };
+    // For portal clients, always use the per-user session key.
+    const portalHistoryUser = client?.portalUser;
+    const sessionKey = portalHistoryUser
+      ? `portal:${portalHistoryUser.toLowerCase()}`
+      : rawHistoryParams.sessionKey;
+    const { limit } = rawHistoryParams;
     const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
     const sessionId = entry?.sessionId;
     const rawMessages =
@@ -630,7 +636,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       verboseLevel,
     });
   },
-  "chat.abort": ({ params, respond, context }) => {
+  "chat.abort": ({ params, respond, context, client }) => {
     if (!validateChatAbortParams(params)) {
       respond(
         false,
@@ -642,10 +648,15 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const { sessionKey: rawSessionKey, runId } = params as {
+    const abortParams = params as {
       sessionKey: string;
       runId?: string;
     };
+    // For portal clients, override session key to prevent cross-user aborts.
+    const rawSessionKey = client?.portalUser
+      ? `portal:${client.portalUser.toLowerCase()}`
+      : abortParams.sessionKey;
+    const { runId } = abortParams;
 
     const ops = createChatAbortOps(context);
 
@@ -763,8 +774,34 @@ export const chatHandlers: GatewayRequestHandlers = {
         return;
       }
     }
-    const rawSessionKey = p.sessionKey;
-    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    // For portal clients, override the session key to a per-user key so each
+    // user has an isolated chat history regardless of what the SPA sends.
+    const portalUser = client?.portalUser;
+    const rawSessionKey = portalUser
+      ? `portal:${portalUser.toLowerCase()}`
+      : p.sessionKey;
+
+    const { cfg: rawCfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+
+    // For portal clients, force chatMode (only task-creation tool available) unless
+    // the portal config explicitly disables it.
+    let cfg = rawCfg;
+    if (portalUser) {
+      const portalChatMode = rawCfg.gateway?.webchatPortal?.chatMode ?? true;
+      if (portalChatMode && !rawCfg.agents?.defaults?.chatMode) {
+        cfg = {
+          ...rawCfg,
+          agents: {
+            ...rawCfg.agents,
+            defaults: {
+              ...rawCfg.agents?.defaults,
+              chatMode: true,
+            },
+          },
+        };
+      }
+    }
+
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,
@@ -1012,7 +1049,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       });
     }
   },
-  "chat.inject": async ({ params, respond, context }) => {
+  "chat.inject": async ({ params, respond, context, client }) => {
     if (!validateChatInjectParams(params)) {
       respond(
         false,
@@ -1030,8 +1067,10 @@ export const chatHandlers: GatewayRequestHandlers = {
       label?: string;
     };
 
-    // Load session to find transcript file
-    const rawSessionKey = p.sessionKey;
+    // Load session to find transcript file; portal clients use their per-user key.
+    const rawSessionKey = client?.portalUser
+      ? `portal:${client.portalUser.toLowerCase()}`
+      : p.sessionKey;
     const { cfg, storePath, entry } = loadSessionEntry(rawSessionKey);
     const sessionId = entry?.sessionId;
     if (!sessionId || !storePath) {

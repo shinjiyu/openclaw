@@ -280,6 +280,42 @@ export type GatewayToolsConfig = {
   allow?: string[];
 };
 
+/** A single user entry for the WebChat Portal. */
+export type GatewayWebchatPortalUser = {
+  /** Login username. */
+  username: string;
+  /** Login password (plain text; store in env-var or secrets manager for production). */
+  password: string;
+  /**
+   * Optional agent id to use for this user's sessions.
+   * Defaults to the gateway default agent.
+   */
+  agentId?: string;
+};
+
+export type GatewayWebchatPortalConfig = {
+  /** Enable the WebChat Portal (default: false). */
+  enabled?: boolean;
+  /**
+   * URL base path for the portal (default: /portal).
+   * The portal is served at `<basePath>/` and the login API at `<basePath>/api/login`.
+   */
+  basePath?: string;
+  /**
+   * Session token TTL in hours (default: 24).
+   * After expiry the user must log in again.
+   */
+  tokenTtlHours?: number;
+  /**
+   * Force chat-mode for all portal sessions (default: true).
+   * When enabled the LLM only receives the task-creation tool; full
+   * agent capability runs as background tasks.
+   */
+  chatMode?: boolean;
+  /** List of users allowed to log in to the portal. */
+  users?: GatewayWebchatPortalUser[];
+};
+
 export type GatewayConfig = {
   /** Single multiplexed port for Gateway WS + HTTP (default: 18789). */
   port?: number;
@@ -321,6 +357,11 @@ export type GatewayConfig = {
   allowRealIpFallback?: boolean;
   /** Tool access restrictions for HTTP /tools/invoke endpoint. */
   tools?: GatewayToolsConfig;
+  /**
+   * WebChat Portal: a simple multi-user web-based chat interface with
+   * per-user credentials configured locally.
+   */
+  webchatPortal?: GatewayWebchatPortalConfig;
   /**
    * Channel health monitor interval in minutes.
    * Periodically checks channel health and restarts unhealthy channels.
