@@ -292,9 +292,12 @@ export async function runEmbeddedAttempt(
     // Check if the model supports native image input
     const modelHasVision = params.model.input?.includes("image") ?? false;
     // Resolve chatMode: explicit param wins.
-    // Config fallback is only allowed for portal sessions (key starts with "portal:") to
-    // avoid agents.defaults.chatMode:true bleeding into auto-reply, subagent, and CLI sessions.
-    const isPortalSession = (params.sessionKey ?? "").startsWith("portal:");
+    // Config fallback is only allowed for portal sessions to avoid agents.defaults.chatMode:true
+    // bleeding into auto-reply, subagent, and CLI sessions.
+    // Portal session keys are shaped like "portal:<user>" or "agent:<id>:portal:<user>".
+    const sessionKeyStr = params.sessionKey ?? "";
+    const isPortalSession =
+      sessionKeyStr.startsWith("portal:") || sessionKeyStr.includes(":portal:");
     const resolvedChatMode =
       params.chatMode ??
       (isPortalSession ? (params.config?.agents?.defaults?.chatMode ?? false) : false);
