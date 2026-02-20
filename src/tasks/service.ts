@@ -37,6 +37,12 @@ const WATCHDOG_GRACE_MS = 60_000;
  */
 const MAX_TASK_RETRIES = 2;
 
+/**
+ * Minimum task timeout enforced regardless of caller-specified timeoutSeconds.
+ * Prevents overly aggressive timeouts (e.g. LLM choosing 60s for a complex task).
+ */
+const MIN_TASK_TIMEOUT_SECONDS = 120;
+
 export type TaskServiceDeps = {
   deps: CliDeps;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
@@ -191,7 +197,9 @@ export class TaskService {
           continue;
         }
         const timeoutMs =
-          task.timeoutSeconds != null ? task.timeoutSeconds * 1000 : DEFAULT_TASK_TIMEOUT_MS;
+          task.timeoutSeconds != null
+            ? Math.max(task.timeoutSeconds * 1000, MIN_TASK_TIMEOUT_SECONDS * 1000)
+            : DEFAULT_TASK_TIMEOUT_MS;
         const elapsed = now - task.startedAt;
         if (elapsed > timeoutMs + WATCHDOG_GRACE_MS && !this.abortTriggered.has(taskId)) {
           log.warn("watchdog: aborting task that exceeded timeout", {
@@ -451,7 +459,7 @@ function buildFakeJob(task: Task, defaultTimeoutMs: number) {
   // the interactive agent default to accommodate autonomous long-running tasks).
   const resolvedTimeoutSeconds =
     task.timeoutSeconds != null && task.timeoutSeconds > 0
-      ? task.timeoutSeconds
+      ? Math.max(task.timeoutSeconds, MIN_TASK_TIMEOUT_SECONDS)
       : Math.round(defaultTimeoutMs / 1000);
   return {
     id: task.id,
