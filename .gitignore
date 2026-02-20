@@ -86,6 +86,9 @@ USER.md
 # local tooling
 .serena/
 
+# Local deploy script (contains server-specific details)
+scripts/deploy-local.sh
+
 # Agent credentials and memory (NEVER COMMIT)
 /memory/
 .agent/*.json
