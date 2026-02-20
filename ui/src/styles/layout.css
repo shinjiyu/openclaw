@@ -584,7 +584,6 @@
   }
 
   .nav {
-    position: static;
     max-height: none;
     display: flex;
     gap: 6px;
@@ -593,6 +592,11 @@
     border-bottom: 1px solid var(--border);
     padding: 10px 14px;
     background: var(--bg);
+  }
+
+  /* Right-edge fade: visually signals the tab bar is scrollable on mobile */
+  .nav {
+    box-shadow: inset -48px 0 24px -16px var(--bg);
   }
 
   .nav-group {

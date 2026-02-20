@@ -15,7 +15,10 @@ export function buildPortalHtml(opts: {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>${escapeHtml(assistantName)} Portal</title>
   <style>
     :root {
@@ -294,6 +297,11 @@ export function buildPortalHtml(opts: {
       line-height: 1.5;
       transition: border-color 0.15s;
     }
+    @media (max-width: 640px) {
+      /* font-size: 16px prevents iOS Safari from zooming on textarea focus */
+      .chat-textarea { font-size: 16px; min-height: 44px; }
+      .send-btn { width: 44px; height: 44px; }
+    }
     .chat-textarea:focus { border-color: var(--accent); }
     .chat-textarea:disabled { opacity: 0.5; }
     .send-btn {
@@ -470,9 +478,65 @@ export function buildPortalHtml(opts: {
       font-size: 0.82rem;
     }
 
+    /* ── Tasks toggle button (mobile only) ─────────────────────── */
+    .tasks-toggle-btn {
+      display: none;
+      align-items: center;
+      gap: 0.35rem;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: var(--radius-sm);
+      padding: 0.3rem 0.65rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      position: relative;
+    }
+    .tasks-toggle-btn:hover { color: var(--text); border-color: var(--muted); }
+    .tasks-toggle-btn.has-active { color: var(--accent); border-color: rgba(108,125,255,0.5); }
+    .tasks-toggle-badge {
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.6rem;
+      font-weight: 700;
+      padding: 0.05rem 0.35rem;
+      border-radius: 99px;
+      min-width: 14px;
+      text-align: center;
+      display: none;
+    }
+    .tasks-panel-close {
+      display: none;
+      position: absolute;
+      top: 0.75rem;
+      right: 1.25rem;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: var(--radius-sm);
+      padding: 0.35rem 0.75rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
     /* ── Responsive ─────────────────────────────────────────── */
     @media (max-width: 640px) {
-      .tasks-panel { display: none; }
+      .tasks-toggle-btn { display: flex; }
+
+      /* Tasks panel: hidden by default on mobile, shown as overlay when open */
+      .tasks-panel {
+        display: none;
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        z-index: 100;
+        background: var(--bg);
+      }
+      .tasks-panel.mobile-open { display: flex; }
+      .tasks-panel-close { display: block; }
+      .tasks-header { padding-right: 90px; } /* make room for close btn */
     }
   </style>
 </head>
@@ -508,6 +572,9 @@ export function buildPortalHtml(opts: {
     <span class="title">${escapeHtml(assistantName)}</span>
     <span class="conn-dot" id="conn-dot"></span>
     <span class="username-tag" id="username-display"></span>
+    <button class="tasks-toggle-btn" id="tasks-toggle-btn" title="View background tasks">
+      Tasks <span class="tasks-toggle-badge" id="tasks-toggle-badge"></span>
+    </button>
     <button class="btn-logout" id="logout-btn">Sign out</button>
   </div>
   <div class="split">
@@ -534,7 +601,7 @@ export function buildPortalHtml(opts: {
     </div>
 
     <!-- Tasks -->
-    <div class="tasks-panel">
+    <div class="tasks-panel" id="tasks-panel">
       <div class="tasks-header">
         <button class="tab-btn active" id="tab-active" data-tab="active">
           Active <span class="tab-badge" id="badge-active" style="display:none;">0</span>
@@ -546,6 +613,7 @@ export function buildPortalHtml(opts: {
       <div class="tasks-list" id="tasks-list">
         <div class="tasks-empty">No active tasks</div>
       </div>
+      <button class="tasks-panel-close" id="tasks-panel-close">✕ Close</button>
     </div>
   </div>
 </div>
@@ -592,6 +660,20 @@ const tabActive = document.getElementById('tab-active');
 const tabHistory = document.getElementById('tab-history');
 const badgeActive = document.getElementById('badge-active');
 const badgeHistory = document.getElementById('badge-history');
+const tasksPanel = document.getElementById('tasks-panel');
+const tasksToggleBtn = document.getElementById('tasks-toggle-btn');
+const tasksToggleBadge = document.getElementById('tasks-toggle-badge');
+const tasksPanelClose = document.getElementById('tasks-panel-close');
+
+// Mobile tasks panel toggle
+if (tasksToggleBtn && tasksPanel && tasksPanelClose) {
+  tasksToggleBtn.addEventListener('click', () => {
+    tasksPanel.classList.add('mobile-open');
+  });
+  tasksPanelClose.addEventListener('click', () => {
+    tasksPanel.classList.remove('mobile-open');
+  });
+}
 
 // ── Utilities ────────────────────────────────────────────────
 function escEl(s) {
@@ -1122,6 +1204,17 @@ function updateBadges(status) {
     badgeHistory.style.display = 'inline-block';
   } else {
     badgeHistory.style.display = 'none';
+  }
+  // Update mobile toggle button badge
+  if (tasksToggleBtn && tasksToggleBadge) {
+    if (activeN > 0) {
+      tasksToggleBtn.classList.add('has-active');
+      tasksToggleBadge.textContent = activeN;
+      tasksToggleBadge.style.display = 'inline-block';
+    } else {
+      tasksToggleBtn.classList.remove('has-active');
+      tasksToggleBadge.style.display = 'none';
+    }
   }
 }
 
