@@ -66,6 +66,8 @@ export function createOpenClawTools(options?: {
   requesterSenderId?: string | null;
   /** Whether the requesting sender is an owner. */
   senderIsOwner?: boolean;
+  /** If true, this is a background task — exclude tasks_create to prevent infinite nesting. */
+  isBackgroundTask?: boolean;
 }): AnyAgentTool[] {
   const workspaceDir = resolveWorkspaceRoot(options?.workspaceDir);
   const imageTool = options?.agentDir?.trim()
@@ -116,7 +118,9 @@ export function createOpenClawTools(options?: {
     createCronTool({
       agentSessionKey: options?.agentSessionKey,
     }),
-    ...taskTools,
+    ...(options?.isBackgroundTask
+      ? taskTools.filter((t) => t.name !== "tasks_create")
+      : taskTools),
     ...(messageTool ? [messageTool] : []),
     createTtsTool({
       agentChannel: options?.agentChannel,

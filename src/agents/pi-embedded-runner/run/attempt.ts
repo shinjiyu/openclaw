@@ -331,6 +331,7 @@ export async function runEmbeddedAttempt(
           requireExplicitMessageTarget:
             params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
           disableMessageTool: params.disableMessageTool,
+          isBackgroundTask: params.isBackgroundTask,
           chatMode: resolvedChatMode,
         });
     const tools = sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider });

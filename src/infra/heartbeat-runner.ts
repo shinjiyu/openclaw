@@ -722,7 +722,19 @@ export async function runHeartbeatOnce(opts: {
     const replyOpts = heartbeatModelOverride
       ? { isHeartbeat: true, heartbeatModelOverride, suppressToolErrorWarnings }
       : { isHeartbeat: true, suppressToolErrorWarnings };
-    const replyResult = await getReplyFromConfig(ctx, replyOpts, cfg);
+    // Heartbeat is a system run — force chatMode off so the agent gets full tools
+    // instead of being restricted to task-management-only tools.
+    const heartbeatCfg =
+      cfg.agents?.defaults?.chatMode
+        ? {
+            ...cfg,
+            agents: {
+              ...cfg.agents,
+              defaults: { ...cfg.agents?.defaults, chatMode: false },
+            },
+          }
+        : cfg;
+    const replyResult = await getReplyFromConfig(ctx, replyOpts, heartbeatCfg);
     const replyPayload = resolveHeartbeatReplyPayload(replyResult);
     const includeReasoning = heartbeat?.includeReasoning === true;
     const reasoningPayloads = includeReasoning

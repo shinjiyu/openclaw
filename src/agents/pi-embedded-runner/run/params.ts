@@ -61,6 +61,8 @@ export type RunEmbeddedPiAgentParams = {
    * tasks_status). Overrides agent config chatMode when explicitly set.
    */
   chatMode?: boolean;
+  /** If true, this is a background task — exclude tasks_create to prevent infinite nesting. */
+  isBackgroundTask?: boolean;
   sessionFile: string;
   workspaceDir: string;
   agentDir?: string;
