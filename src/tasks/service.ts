@@ -188,6 +188,11 @@ export class TaskService {
       return;
     }
 
+    // Periodic recovery: requeue any task that is "running" in the store but not in our
+    // in-memory set (e.g. process was killed and restarted but recoverStuckTasks failed,
+    // or store was left inconsistent). Prevents tasks from staying stuck "running" forever.
+    this.recoverStuckTasks();
+
     // Watchdog: abort tasks that have been running longer than their timeout + grace period.
     const now = Date.now();
     for (const [taskId, entry] of this.running) {
