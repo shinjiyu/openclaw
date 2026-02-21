@@ -833,6 +833,19 @@ function handleWsMessage(msg) {
   const ev = msg.event;
   const p = msg.payload || {};
 
+  // ── Session-key guard ─────────────────────────────────────────────────────
+  // The server broadcasts chat/agent events to ALL connected WS clients.
+  // Filter here so this portal user only sees events for their own session.
+  // Session keys can be the raw form ("portal:<user>") or the canonical form
+  // ("agent:<id>:portal:<user>"), so we match the "portal:<user>" suffix.
+  if (ev === 'chat' || ev === 'agent') {
+    const myPortalSegment = 'portal:' + (username || 'anon').toLowerCase();
+    const sk = (p.sessionKey || '').toLowerCase();
+    if (sk && sk !== myPortalSegment && !sk.endsWith(':' + myPortalSegment)) {
+      return; // belongs to a different session (e.g. Feishu) — ignore
+    }
+  }
+
   // ── "chat" event ──
   // payload: {runId, sessionKey, seq, state, message?, errorMessage?}
   // state: "delta" | "final" | "aborted" | "error"

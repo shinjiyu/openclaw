@@ -292,15 +292,23 @@ export async function runEmbeddedAttempt(
     // Check if the model supports native image input
     const modelHasVision = params.model.input?.includes("image") ?? false;
     // Resolve chatMode: explicit param wins.
-    // Config fallback is only allowed for portal sessions to avoid agents.defaults.chatMode:true
-    // bleeding into auto-reply, subagent, and CLI sessions.
-    // Portal session keys are shaped like "portal:<user>" or "agent:<id>:portal:<user>".
+    // Config fallback (agents.defaults.chatMode) is only allowed for channel sessions that
+    // intentionally run in "delegate to tasks" mode.  This prevents bleeding into
+    // auto-reply, subagent, and CLI sessions.
+    // Portal:  "portal:<user>"  or  "agent:<id>:portal:<user>"
+    // Feishu:  "agent:<id>:feishu:<kind>:<peer>"  — defaults to chatMode=true so users
+    //          interact via task delegation rather than free-form tool execution.
     const sessionKeyStr = params.sessionKey ?? "";
     const isPortalSession =
       sessionKeyStr.startsWith("portal:") || sessionKeyStr.includes(":portal:");
+    const isFeishuSession = sessionKeyStr.includes(":feishu:");
     const resolvedChatMode =
       params.chatMode ??
-      (isPortalSession ? (params.config?.agents?.defaults?.chatMode ?? false) : false);
+      (isPortalSession
+        ? (params.config?.agents?.defaults?.chatMode ?? false)
+        : isFeishuSession
+          ? (params.config?.agents?.defaults?.chatMode ?? true) // feishu: default on
+          : false);
     const toolsRaw = params.disableTools
       ? []
       : createOpenClawCodingTools({
