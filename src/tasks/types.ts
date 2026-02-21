@@ -57,16 +57,17 @@ export type TaskProgressEvent = {
 
 export type TaskEvent =
   | { action: "created"; taskId: string; task: Task }
-  | { action: "started"; taskId: string }
+  | { action: "started"; taskId: string; originSessionKey?: string }
   | {
       action: "finished";
       taskId: string;
       status: "completed" | "failed" | "cancelled";
+      originSessionKey?: string;
       result?: string;
       error?: string;
       durationMs?: number;
       totalTokens?: number;
     }
-  | { action: "updated"; taskId: string; patch: Partial<Task> }
+  | { action: "updated"; taskId: string; originSessionKey?: string; patch: Partial<Task> }
   /** Granular progress events (LLM call lifecycle, tool call start/end with timing). */
-  | { action: "progress"; taskId: string; event: TaskProgressEvent };
+  | { action: "progress"; taskId: string; originSessionKey?: string; event: TaskProgressEvent };

@@ -638,6 +638,9 @@ let streamEl = null;
 let tasks = [];
 let taskPollTimer = null;
 let taskTab = 'active';
+// taskId → originSessionKey: populated from "created" events so we can filter
+// subsequent progress/started/finished events to only show portal-owned tasks.
+const taskOrigins = new Map();
 let taskProgress = {};  // taskId → { activity, llmStartedAt, lastLlmMs }
 let durationTimer = null;
 
@@ -833,18 +836,41 @@ function handleWsMessage(msg) {
   const ev = msg.event;
   const p = msg.payload || {};
 
-  // ── Cross-channel guard ───────────────────────────────────────────────────
-  // The server broadcasts chat/agent events to ALL connected WS clients.
-  // Filter out events that are definitively from a different messaging channel
-  // (e.g. Feishu, Telegram) so they don't appear in the portal chat.
-  // We use a blocklist of known non-portal channel segments rather than a
-  // strict allowlist so that task-result events (which may carry an internal
-  // session key that doesn't look exactly like portal:<user>) still show up.
+  // ── Session routing guard ────────────────────────────────────────────────
+  // The server broadcasts all events to all connected WS clients.  We filter
+  // here so this portal user only sees events that belong to their session.
+  //
+  // chat / agent events carry a sessionKey.  Both the raw form
+  // ("portal:<user>") and the canonical form ("agent:<id>:portal:<user>")
+  // contain "portal:<user>" as a substring, so we match on that.
+  // Events with no sessionKey are always shown (e.g. system events).
+  //
+  // task events carry originSessionKey (set by the tasks service).
+  // We cache originSessionKey per taskId on "created" events and apply it
+  // for all subsequent events (started/progress/finished/updated).
+  // Tasks with no originSessionKey (e.g. created via API) are shown to all.
+
+  const myPortalSegment = 'portal:' + (username || 'anon').toLowerCase();
+
   if (ev === 'chat' || ev === 'agent') {
     const sk = (p.sessionKey || '').toLowerCase();
-    const NON_PORTAL_CHANNELS = [':feishu:', ':telegram:', ':discord:', ':slack:', ':signal:', ':whatsapp:', ':imessage:', ':line:', ':matrix:', ':msteams:'];
-    if (sk && NON_PORTAL_CHANNELS.some(ch => sk.includes(ch))) {
-      return; // belongs to a different messaging channel — ignore
+    if (sk && !sk.includes(myPortalSegment)) {
+      return; // belongs to a different session
+    }
+  }
+
+  if (ev === 'task') {
+    const tid = p.taskId;
+    if (p.action === 'created' && p.task) {
+      // Cache the originSessionKey so we can filter later events.
+      taskOrigins.set(tid, (p.task.originSessionKey || '').toLowerCase());
+    } else if (p.originSessionKey !== undefined) {
+      // Server now includes originSessionKey on all events — update cache.
+      taskOrigins.set(tid, (p.originSessionKey || '').toLowerCase());
+    }
+    const osk = taskOrigins.get(tid) ?? '';
+    if (osk && !osk.includes(myPortalSegment)) {
+      return; // task originated from a different channel (e.g. Feishu)
     }
   }
 

@@ -90,7 +90,7 @@ export class TaskService {
         if (!this.running.has(task.id)) {
           log.warn("recovering stuck task: requeueing", { taskId: task.id });
           updateTask(storePath, task.id, { status: "queued", startedAt: undefined });
-          this.emit({ action: "updated", taskId: task.id, patch: { status: "queued" } });
+          this.emit({ action: "updated", taskId: task.id, originSessionKey: task.originSessionKey, patch: { status: "queued" } });
         }
       }
     } catch (err) {
@@ -149,7 +149,7 @@ export class TaskService {
     }
     if (task.status === "queued") {
       updateTask(storePath, taskId, { status: "cancelled", completedAt: Date.now() });
-      this.emit({ action: "finished", taskId, status: "cancelled" });
+      this.emit({ action: "finished", taskId, status: "cancelled", originSessionKey: task.originSessionKey });
       return true;
     }
     if (task.status === "running") {
@@ -247,7 +247,7 @@ export class TaskService {
 
     // Mark running.
     updateTask(storePath, task.id, { status: "running", startedAt });
-    this.emit({ action: "started", taskId: task.id });
+    this.emit({ action: "started", taskId: task.id, originSessionKey: task.originSessionKey });
     log.info("task started", { taskId: task.id, agentId: task.agentId });
 
     try {
@@ -262,7 +262,7 @@ export class TaskService {
         agentId: task.agentId,
         lane: "task",
         onAgentEvent: (evt) => {
-          this.emit({ action: "progress", taskId: task.id, event: evt });
+          this.emit({ action: "progress", taskId: task.id, originSessionKey: task.originSessionKey, event: evt });
         },
         abortSignal: abortController.signal,
       });
@@ -292,6 +292,7 @@ export class TaskService {
         action: "finished",
         taskId: task.id,
         status: finalStatus,
+        originSessionKey: task.originSessionKey,
         result: patch.result,
         error: patch.error,
         durationMs,
@@ -326,6 +327,7 @@ export class TaskService {
         action: "finished",
         taskId: task.id,
         status: "failed",
+        originSessionKey: task.originSessionKey,
         error: errorMsg,
         durationMs,
       });
@@ -361,6 +363,7 @@ export class TaskService {
     this.emit({
       action: "updated",
       taskId: task.id,
+      originSessionKey: task.originSessionKey,
       patch: { status: "queued", retryCount },
     });
     // Wake the worker quickly so the retry is picked up without delay.
