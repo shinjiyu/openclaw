@@ -54,8 +54,9 @@ import {
   resolveHookChannel,
   resolveHookDeliver,
 } from "./hooks.js";
-import { sendGatewayAuthFailure, setDefaultSecurityHeaders } from "./http-common.js";
-import { getBearerToken } from "./http-utils.js";
+import { sendGatewayAuthFailure, sendJson, setDefaultSecurityHeaders } from "./http-common.js";
+import { getBearerToken, getHeader } from "./http-utils.js";
+import { isPrivateOrLoopbackAddress, resolveGatewayClientIp } from "./net.js";
 import { handleOpenAiHttpRequest } from "./openai-http.js";
 import { handleOpenResponsesHttpRequest } from "./openresponses-http.js";
 import { GATEWAY_CLIENT_MODES, normalizeGatewayClientMode } from "./protocol/client-info.js";
@@ -482,6 +483,11 @@ export function createGatewayHttpServer(opts: {
   bindHost?: string;
   /** Gateway port (used to derive portal request handler context). */
   port?: number;
+  /**
+   * When set (e.g. OPENCLAW_E2E_INJECT=1), POST /test/inject-broadcast with JSON
+   * { event: string, payload: unknown } will broadcast that event for E2E tests (e.g. Feishu mocker).
+   */
+  testInjectBroadcast?: (event: string, payload: unknown) => void;
 }): HttpServer {
   const {
     canvasHost,
@@ -496,6 +502,7 @@ export function createGatewayHttpServer(opts: {
     handlePluginRequest,
     resolvedAuth,
     rateLimiter,
+    testInjectBroadcast,
   } = opts;
   const httpServer: HttpServer = opts.tlsOptions
     ? createHttpsServer(opts.tlsOptions, (req, res) => {
@@ -526,6 +533,26 @@ export function createGatewayHttpServer(opts: {
         req.url = scopedCanvas.rewrittenUrl;
       }
       const requestPath = new URL(req.url ?? "/", "http://localhost").pathname;
+
+      // E2E-only: inject a broadcast event (e.g. to simulate Feishu message for cross-talk tests).
+      if (testInjectBroadcast && requestPath === "/test/inject-broadcast" && req.method === "POST") {
+        const body = await readJsonBody(req, 64 * 1024);
+        if (!body.ok) {
+          sendJson(res, body.error === "payload too large" ? 413 : 400, { ok: false, error: body.error });
+          return;
+        }
+        const v = typeof body.value === "object" && body.value !== null ? body.value as Record<string, unknown> : {};
+        const event = typeof v.event === "string" ? v.event : "";
+        const payload = v.payload;
+        if (!event) {
+          sendJson(res, 400, { ok: false, error: "missing event" });
+          return;
+        }
+        testInjectBroadcast(event, payload ?? {});
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
       if (await handleHooksRequest(req, res)) {
         return;
       }

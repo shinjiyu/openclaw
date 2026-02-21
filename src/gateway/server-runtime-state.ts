@@ -135,6 +135,10 @@ export async function createGatewayRuntimeState(params: {
       tlsOptions: params.gatewayTls?.enabled ? params.gatewayTls.tlsOptions : undefined,
       bindHost: host,
       port: params.port,
+      testInjectBroadcast:
+        process.env.OPENCLAW_E2E_INJECT === "1"
+          ? (event: string, payload: unknown) => broadcast(event, payload)
+          : undefined,
     });
     try {
       await listenGatewayHttpServer({

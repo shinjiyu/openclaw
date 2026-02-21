@@ -1,0 +1,12 @@
+{
+  "gateway": {
+    "webchatPortal": {
+      "enabled": true,
+      "basePath": "/portal",
+      "users": [
+        { "username": "admin", "password": "test" }
+      ]
+    }
+  },
+  "agents": { "list": [] }
+}
