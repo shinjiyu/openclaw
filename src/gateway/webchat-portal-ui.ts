@@ -833,16 +833,18 @@ function handleWsMessage(msg) {
   const ev = msg.event;
   const p = msg.payload || {};
 
-  // ── Session-key guard ─────────────────────────────────────────────────────
+  // ── Cross-channel guard ───────────────────────────────────────────────────
   // The server broadcasts chat/agent events to ALL connected WS clients.
-  // Filter here so this portal user only sees events for their own session.
-  // Session keys can be the raw form ("portal:<user>") or the canonical form
-  // ("agent:<id>:portal:<user>"), so we match the "portal:<user>" suffix.
+  // Filter out events that are definitively from a different messaging channel
+  // (e.g. Feishu, Telegram) so they don't appear in the portal chat.
+  // We use a blocklist of known non-portal channel segments rather than a
+  // strict allowlist so that task-result events (which may carry an internal
+  // session key that doesn't look exactly like portal:<user>) still show up.
   if (ev === 'chat' || ev === 'agent') {
-    const myPortalSegment = 'portal:' + (username || 'anon').toLowerCase();
     const sk = (p.sessionKey || '').toLowerCase();
-    if (sk && sk !== myPortalSegment && !sk.endsWith(':' + myPortalSegment)) {
-      return; // belongs to a different session (e.g. Feishu) — ignore
+    const NON_PORTAL_CHANNELS = [':feishu:', ':telegram:', ':discord:', ':slack:', ':signal:', ':whatsapp:', ':imessage:', ':line:', ':matrix:', ':msteams:'];
+    if (sk && NON_PORTAL_CHANNELS.some(ch => sk.includes(ch))) {
+      return; // belongs to a different messaging channel — ignore
     }
   }
 
