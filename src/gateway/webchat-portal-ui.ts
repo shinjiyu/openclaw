@@ -777,6 +777,14 @@ function connectWs() {
         loadHistory();
         startTaskPoll();
       } else {
+        const errMsg = (msg.error?.message || '').toLowerCase();
+        if (errMsg.includes('session expired') || errMsg.includes('sign in again')) {
+          sessionStorage.removeItem('portal_token');
+          sessionStorage.removeItem('portal_username');
+          token = null;
+          username = null;
+          showLogin();
+        }
         console.error('WebSocket connect rejected:', msg.error);
         ws.close();
       }
@@ -808,10 +816,18 @@ function connectWs() {
     handleWsMessage(msg);
   });
 
-  ws.addEventListener('close', () => {
+  ws.addEventListener('close', (ev) => {
     setConnected(false);
     wsReady = false;
-    // Auto-reconnect after 3 s if still logged in
+    const reason = (ev.reason || '').toLowerCase();
+    if (reason.includes('session expired') || reason.includes('sign in again')) {
+      sessionStorage.removeItem('portal_token');
+      sessionStorage.removeItem('portal_username');
+      token = null;
+      username = null;
+      showLogin();
+      return;
+    }
     if (token) {
       setTimeout(connectWs, 3000);
     }

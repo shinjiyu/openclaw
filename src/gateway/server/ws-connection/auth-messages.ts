@@ -29,6 +29,10 @@ export function formatGatewayAuthFailureMessage(params: {
     case "token_missing":
       return `unauthorized: gateway token missing (${tokenHint})`;
     case "token_mismatch":
+      // Portal tokens are in-memory; gateway restart clears them. Tell user to re-login.
+      if (isWebchat) {
+        return "Session expired or invalid. Please sign in again at the Portal.";
+      }
       return `unauthorized: gateway token mismatch (${tokenHint})`;
     case "token_missing_config":
       return "unauthorized: gateway token not configured on gateway (set gateway.auth.token)";
