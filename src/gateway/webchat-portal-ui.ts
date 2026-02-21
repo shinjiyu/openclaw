@@ -1182,10 +1182,11 @@ function handleTaskEvent(evt) {
     const tp = taskProgress[id];
 
     if (stream === 'lifecycle') {
-      if (data.phase === 'llm-start') {
+      // Backend emits phase "start" (run/LLM start) and "end" (run/LLM end), not llm-start/llm-end.
+      if (data.phase === 'llm-start' || (data.phase === 'start' && !data.name)) {
         tp.llmStartedAt = Date.now();
         tp.activity = 'Calling LLM…';
-      } else if (data.phase === 'llm-end') {
+      } else if (data.phase === 'llm-end' || data.phase === 'end') {
         tp.lastLlmMs = tp.llmStartedAt ? Date.now() - tp.llmStartedAt : (data.durationMs || 0);
         tp.llmStartedAt = null;
         tp.activity = 'LLM responded';
@@ -1196,7 +1197,13 @@ function handleTaskEvent(evt) {
         tp.activity = null;
       }
     } else if (stream === 'tool') {
-      tp.activity = 'Tool: ' + (data.name || data.toolName || '…');
+      // Backend emits phase "start" (tool start) and "result" (tool end).
+      if (data.phase === 'result') {
+        tp.activity = null;
+      } else {
+        tp.activity = 'Tool: ' + (data.name || data.toolName || '…');
+        tp.llmStartedAt = null;
+      }
     } else if (stream === 'assistant') {
       tp.activity = 'Generating…';
     }
@@ -1303,6 +1310,9 @@ function renderTaskCard(task) {
       } else if (tp.lastLlmMs) {
         actContent += ' <span class="llm-time">' + formatDuration(tp.lastLlmMs) + '</span>';
       }
+    } else {
+      // No progress yet: show fallback so user sees "running" means the worker is active.
+      actContent = '<span class="activity-dot"></span> Running…';
     }
     activityHtml = '<div class="task-activity" id="task-activity-' + escEl(task.id) + '" style="' + (actContent ? '' : 'display:none;') + '">' + actContent + '</div>';
   }
