@@ -102,3 +102,4 @@ package-lock.json
 
 # Local iOS signing overrides
 apps/ios/LocalSigning.xcconfig
+scripts/deploy-local.sh
