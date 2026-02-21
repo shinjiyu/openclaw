@@ -39,6 +39,7 @@ import {
 import {
   applySettings as applySettingsInternal,
   loadCron as loadCronInternal,
+  loadTasks as loadTasksInternal,
   loadOverview as loadOverviewInternal,
   setTab as setTabInternal,
   setTheme as setThemeInternal,
@@ -303,6 +304,16 @@ export class OpenClawApp extends LitElement {
   @state() cronBusy = false;
 
   @state() updateAvailable: import("./types.js").UpdateAvailable | null = null;
+  @state() tasksLoading = false;
+  @state() tasksError: string | null = null;
+  @state() tasksStatus: import("./views/tasks.ts").TasksStatusResult | null = null;
+  @state() tasksList: import("./views/tasks.ts").UiTask[] = [];
+  @state() tasksBusy = false;
+  @state() tasksCreateMessage = "";
+  @state() tasksCreateModel = "";
+  @state() tasksCreateThinking = "";
+  @state() tasksCreateOriginChannel = "";
+  @state() tasksCreateOriginTo = "";
 
   @state() skillsLoading = false;
   @state() skillsReport: SkillStatusReport | null = null;
@@ -441,6 +452,10 @@ export class OpenClawApp extends LitElement {
 
   async loadCron() {
     await loadCronInternal(this as unknown as Parameters<typeof loadCronInternal>[0]);
+  }
+
+  async loadTasks() {
+    await loadTasksInternal(this as unknown as Parameters<typeof loadTasksInternal>[0]);
   }
 
   async handleAbortChat() {

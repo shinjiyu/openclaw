@@ -13,6 +13,7 @@ import { loadAgents } from "./controllers/agents.ts";
 import { loadChannels } from "./controllers/channels.ts";
 import { loadConfig, loadConfigSchema } from "./controllers/config.ts";
 import { loadCronJobs, loadCronStatus } from "./controllers/cron.ts";
+import { loadTasksStatus } from "./controllers/tasks.ts";
 import { loadDebug } from "./controllers/debug.ts";
 import { loadDevices } from "./controllers/devices.ts";
 import { loadExecApprovals } from "./controllers/exec-approvals.ts";
@@ -193,6 +194,9 @@ export async function refreshActiveTab(host: SettingsHost) {
   }
   if (host.tab === "cron") {
     await loadCron(host);
+  }
+  if (host.tab === "tasks") {
+    await loadTasks(host);
   }
   if (host.tab === "skills") {
     await loadSkills(host as unknown as OpenClawApp);
@@ -426,4 +430,8 @@ export async function loadCron(host: SettingsHost) {
     loadCronStatus(host as unknown as OpenClawApp),
     loadCronJobs(host as unknown as OpenClawApp),
   ]);
+}
+
+export async function loadTasks(host: SettingsHost) {
+  await loadTasksStatus(host as unknown as OpenClawApp);
 }

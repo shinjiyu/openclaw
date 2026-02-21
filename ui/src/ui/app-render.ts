@@ -68,6 +68,8 @@ import { renderNodes } from "./views/nodes.ts";
 import { renderOverview } from "./views/overview.ts";
 import { renderSessions } from "./views/sessions.ts";
 import { renderSkills } from "./views/skills.ts";
+import { renderTasks } from "./views/tasks.ts";
+import { loadTasksStatus, createTask as createTaskInternal, cancelTask as cancelTaskInternal, handleTaskEvent } from "./controllers/tasks.ts";
 
 const AVATAR_DATA_RE = /^data:/i;
 const AVATAR_HTTP_RE = /^https?:\/\//i;
@@ -346,6 +348,31 @@ export function renderApp(state: AppViewState) {
                 onRun: (job) => runCronJob(state, job),
                 onRemove: (job) => removeCronJob(state, job),
                 onLoadRuns: (jobId) => loadCronRuns(state, jobId),
+              })
+            : nothing
+        }
+
+        ${
+          state.tab === "tasks"
+            ? renderTasks({
+                loading: state.tasksLoading,
+                error: state.tasksError,
+                status: state.tasksStatus,
+                tasks: state.tasksList,
+                createMessage: state.tasksCreateMessage,
+                createModel: state.tasksCreateModel,
+                createThinking: state.tasksCreateThinking,
+                createOriginChannel: state.tasksCreateOriginChannel,
+                createOriginTo: state.tasksCreateOriginTo,
+                busy: state.tasksBusy,
+                onRefresh: () => loadTasksStatus(state),
+                onCreateMessageChange: (v) => (state.tasksCreateMessage = v),
+                onCreateModelChange: (v) => (state.tasksCreateModel = v),
+                onCreateThinkingChange: (v) => (state.tasksCreateThinking = v),
+                onCreateOriginChannelChange: (v) => (state.tasksCreateOriginChannel = v),
+                onCreateOriginToChange: (v) => (state.tasksCreateOriginTo = v),
+                onCreateSubmit: () => createTaskInternal(state),
+                onCancel: (taskId) => cancelTaskInternal(state, taskId),
               })
             : nothing
         }

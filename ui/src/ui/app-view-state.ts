@@ -31,6 +31,7 @@ import type {
   SkillStatusReport,
   StatusSummary,
 } from "./types.ts";
+import type { TasksStatusResult, UiTask } from "./views/tasks.ts";
 import type { ChatAttachment, ChatQueueItem, CronFormState } from "./ui-types.ts";
 import type { NostrProfileFormState } from "./views/channels.nostr-profile-form.ts";
 import type { SessionLogEntry } from "./views/usage.ts";
@@ -193,6 +194,16 @@ export type AppViewState = {
   cronRunsJobId: string | null;
   cronRuns: CronRunLogEntry[];
   cronBusy: boolean;
+  tasksLoading: boolean;
+  tasksError: string | null;
+  tasksStatus: TasksStatusResult | null;
+  tasksList: UiTask[];
+  tasksBusy: boolean;
+  tasksCreateMessage: string;
+  tasksCreateModel: string;
+  tasksCreateThinking: string;
+  tasksCreateOriginChannel: string;
+  tasksCreateOriginTo: string;
   skillsLoading: boolean;
   skillsReport: SkillStatusReport | null;
   skillsError: string | null;
@@ -232,6 +243,7 @@ export type AppViewState = {
   loadOverview: () => Promise<void>;
   loadAssistantIdentity: () => Promise<void>;
   loadCron: () => Promise<void>;
+  loadTasks: () => Promise<void>;
   handleWhatsAppStart: (force: boolean) => Promise<void>;
   handleWhatsAppWait: () => Promise<void>;
   handleWhatsAppLogout: () => Promise<void>;

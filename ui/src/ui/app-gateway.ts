@@ -26,7 +26,7 @@ import {
 } from "./controllers/exec-approval.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 import { loadSessions } from "./controllers/sessions.ts";
-import type { GatewayEventFrame, GatewayHelloOk } from "./gateway.ts";
+import { handleTaskEvent } from "./controllers/tasks.ts";
 import { GatewayBrowserClient } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
 import type { UiSettings } from "./storage.ts";
@@ -256,6 +256,13 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
 
   if (evt.event === "cron" && host.tab === "cron") {
     void loadCron(host as unknown as Parameters<typeof loadCron>[0]);
+  }
+
+  if (evt.event === "task") {
+    handleTaskEvent(
+      host as unknown as OpenClawApp,
+      evt.payload as Parameters<typeof handleTaskEvent>[1],
+    );
   }
 
   if (evt.event === "device.pair.requested" || evt.event === "device.pair.resolved") {

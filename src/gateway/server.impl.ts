@@ -61,6 +61,7 @@ import { createChannelManager } from "./server-channels.js";
 import { createAgentEventHandler } from "./server-chat.js";
 import { createGatewayCloseHandler } from "./server-close.js";
 import { buildGatewayCronService } from "./server-cron.js";
+import { buildGatewayTaskService } from "./server-tasks.js";
 import { startGatewayDiscovery } from "./server-discovery-runtime.js";
 import { applyGatewayLaneConcurrency } from "./server-lanes.js";
 import { startGatewayMaintenanceTimers } from "./server-maintenance.js";
@@ -427,6 +428,8 @@ export async function startGatewayServer(
   });
   let { cron, storePath: cronStorePath } = cronState;
 
+  const { tasks } = buildGatewayTaskService({ deps, broadcast });
+
   const channelManager = createChannelManager({
     loadConfig,
     channelLogs,
@@ -539,6 +542,7 @@ export async function startGatewayServer(
 
   if (!minimalTestGateway) {
     void cron.start().catch((err) => logCron.error(`failed to start: ${String(err)}`));
+    tasks.start();
   }
 
   // Recover pending outbound deliveries from previous crash/restart.
@@ -621,6 +625,7 @@ export async function startGatewayServer(
       markChannelLoggedOut,
       wizardRunner,
       broadcastVoiceWakeChanged,
+      tasks,
     },
   });
   logGatewayStartup({
