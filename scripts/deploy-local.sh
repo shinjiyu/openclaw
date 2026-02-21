@@ -140,6 +140,7 @@ _run_build() {
   rm -f "$log_file"
 }
 
+_run_build "pnpm install"  pnpm install
 _run_build "pnpm build"    pnpm build
 _run_build "pnpm ui:build" pnpm ui:build
 

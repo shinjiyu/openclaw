@@ -593,6 +593,23 @@ export async function runCronIsolatedAgentTurn(params: {
     });
   }
 
+  // Task runs: if the run ended with a tool error (last payload isError), surface as error so
+  // the task is marked failed and the error is pushed to the origin chat. This allows the user
+  // or a retry to feed the error back to the LLM for modification instead of showing "completed"
+  // with a warning.
+  if (params.lane === "task" && payloads.length > 0) {
+    const last = payloads[payloads.length - 1];
+    if (last?.isError && last?.text?.trim()) {
+      return withRunSession({
+        status: "error",
+        error: last.text,
+        summary: pickSummaryFromPayloads(payloads) ?? undefined,
+        outputText: pickLastNonEmptyTextFromPayloads(payloads),
+        ...telemetry,
+      });
+    }
+  }
+
   const firstText = payloads[0]?.text ?? "";
   let summary = pickSummaryFromPayloads(payloads) ?? pickSummaryFromOutput(firstText);
   let outputText = pickLastNonEmptyTextFromPayloads(payloads);
