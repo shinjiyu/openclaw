@@ -7,8 +7,10 @@ const LIVE = isTruthyEnvValue(process.env.ZAI_LIVE_TEST) || isTruthyEnvValue(pro
 
 const describeLive = LIVE && ZAI_KEY ? describe : describe.skip;
 
-async function expectModelReturnsAssistantText(modelId: "glm-4.7" | "glm-4.7-flashx") {
-  const model = getModel("zai", modelId as "glm-4.7");
+async function expectModelReturnsAssistantText(
+  modelId: "glm-5" | "glm-4.7" | "glm-4.7-flashx",
+) {
+  const model = getModel("zai", modelId);
   const res = await completeSimple(
     model,
     {
@@ -30,6 +32,10 @@ async function expectModelReturnsAssistantText(modelId: "glm-4.7" | "glm-4.7-fla
 }
 
 describeLive("zai live", () => {
+  it("glm-5 returns assistant text", async () => {
+    await expectModelReturnsAssistantText("glm-5");
+  }, 20000);
+
   it("returns assistant text", async () => {
     await expectModelReturnsAssistantText("glm-4.7");
   }, 20000);
