@@ -90,59 +90,85 @@ git fetch origin "$REMOTE_BRANCH" --quiet
 LOCAL_COUNT="$(git rev-list --count "origin/${REMOTE_BRANCH}..HEAD" 2>/dev/null || echo 0)"
 BEHIND_COUNT="$(git rev-list --count "HEAD..origin/${REMOTE_BRANCH}" 2>/dev/null || echo 0)"
 
-if [ "$BEHIND_COUNT" -eq 0 ]; then
-  ok "Already up to date (${OLD_SHA}), nothing to deploy"
+# Check whether build output is intact (may be missing after OOM mid-build)
+DIST_ENTRY="${REMOTE_DIR}/dist/entry.js"
+DIST_UI="${REMOTE_DIR}/dist/control-ui/index.html"
+DIST_OK=1
+[ -f "$DIST_ENTRY" ] || DIST_OK=0
+[ -f "$DIST_UI"    ] || DIST_OK=0
+
+if [ "$BEHIND_COUNT" -eq 0 ] && [ "$DIST_OK" -eq 1 ]; then
+  ok "Already up to date (${OLD_SHA}) and dist is intact, nothing to deploy"
   systemctl status "$SERVICE_NAME" --no-pager --lines=0 2>/dev/null || true
   exit 0
 fi
 
-log "Behind by ${BEHIND_COUNT} commit(s), pulling..."
+if [ "$BEHIND_COUNT" -eq 0 ]; then
+  log "Git is up to date but dist is incomplete — forcing rebuild (dist/entry.js or control-ui missing)"
+else
+  log "Behind by ${BEHIND_COUNT} commit(s), pulling..."
+fi
 
 if [ "$LOCAL_COUNT" -gt 0 ]; then
   log "Warning: ${LOCAL_COUNT} local commit(s) ahead — rebasing"
 fi
 
-if ! git pull --rebase origin "$REMOTE_BRANCH"; then
-  git rebase --abort 2>/dev/null || true
-  fail "git pull --rebase failed (conflicts?). Rebase aborted, server unchanged."
+if [ "$BEHIND_COUNT" -gt 0 ]; then
+  if ! git pull --rebase origin "$REMOTE_BRANCH"; then
+    git rebase --abort 2>/dev/null || true
+    fail "git pull --rebase failed (conflicts?). Rebase aborted, server unchanged."
+  fi
 fi
 
 NEW_SHA="$(git rev-parse --short HEAD)"
 log "Updated: ${OLD_SHA} → ${NEW_SHA}"
 
-log "Building (pnpm build)..."
-BUILD_LOG="$(mktemp)"
-if ! pnpm build >"$BUILD_LOG" 2>&1; then
-  tail -30 "$BUILD_LOG"
-  rm -f "$BUILD_LOG"
-  fail "pnpm build failed"
-fi
-tail -10 "$BUILD_LOG"
-rm -f "$BUILD_LOG"
+_run_build() {
+  local label="$1"; shift
+  local log_file
+  log_file="$(mktemp)"
+  log "Building (${label})..."
+  # Run build; capture exit code explicitly so OOM/signal kills are not masked
+  local rc=0
+  "$@" >"$log_file" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    tail -30 "$log_file"
+    rm -f "$log_file"
+    fail "${label} failed (exit ${rc}) — dist may be incomplete; service NOT restarted"
+  fi
+  tail -5 "$log_file"
+  rm -f "$log_file"
+}
 
-log "Building Control UI (pnpm ui:build)..."
-UI_LOG="$(mktemp)"
-if ! pnpm ui:build >"$UI_LOG" 2>&1; then
-  tail -20 "$UI_LOG"
-  rm -f "$UI_LOG"
-  fail "pnpm ui:build failed"
-fi
-tail -5 "$UI_LOG"
-rm -f "$UI_LOG"
+_run_build "pnpm build"    pnpm build
+_run_build "pnpm ui:build" pnpm ui:build
+
+# Sanity-check that critical build artefacts were actually produced
+[ -f "$DIST_ENTRY" ] || fail "Build reported success but dist/entry.js is still missing"
+[ -f "$DIST_UI"    ] || fail "Build reported success but dist/control-ui/index.html is still missing"
+ok "Build artefacts verified (entry.js + control-ui)"
 
 log "Restarting ${SERVICE_NAME}..."
+RESTART_BEFORE="$(systemctl show "$SERVICE_NAME" --property=NRestarts --value 2>/dev/null || echo 0)"
 systemctl restart "$SERVICE_NAME"
 
-sleep 3
+# Wait up to 10 s for the service to stabilise; detect crash-loops via restart counter
+for i in 1 2 3 4 5; do
+  sleep 2
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    RESTART_AFTER="$(systemctl show "$SERVICE_NAME" --property=NRestarts --value 2>/dev/null || echo 0)"
+    if [ "$RESTART_AFTER" -gt "$RESTART_BEFORE" ] && [ "$i" -gt 1 ]; then
+      fail "Service restarted unexpectedly after deploy (restart counter rose from ${RESTART_BEFORE} to ${RESTART_AFTER}) — check logs"
+    fi
+    break
+  fi
+  [ "$i" -lt 5 ] && log "Waiting for service... (${i}/5)" || fail "Service ${SERVICE_NAME} is not running after restart"
+done
 
-if systemctl is-active --quiet "$SERVICE_NAME"; then
-  ok "Service ${SERVICE_NAME} is active"
-else
-  fail "Service ${SERVICE_NAME} is not running after restart"
-fi
+ok "Service ${SERVICE_NAME} is active"
 
 log "Recent logs:"
-journalctl -u "$SERVICE_NAME" --since "10 sec ago" -n 15 --no-pager 2>/dev/null || true
+journalctl -u "$SERVICE_NAME" --since "15 sec ago" -n 15 --no-pager 2>/dev/null || true
 
 BINARY_PATH="$(readlink -f "$(which openclaw 2>/dev/null)" 2>/dev/null || echo '(not in PATH)')"
 log "Binary path: ${BINARY_PATH}"
