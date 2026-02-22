@@ -230,6 +230,8 @@ export const CronRunParamsSchema = cronIdOrJobIdParams({
 
 export const CronRunsParamsSchema = cronIdOrJobIdParams({
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 5000 })),
+  /** Pagination cursor: return only entries with ts < beforeTs (exclusive upper bound). */
+  beforeTs: Type.Optional(Type.Integer({ minimum: 0 })),
 });
 
 export const CronRunLogEntrySchema = Type.Object(

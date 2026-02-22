@@ -552,18 +552,25 @@ export function buildPortalHtml(opts: {
       max-height: 60px;
       overflow-y: auto;
     }
+    .cron-run-section { margin-top: 0.4rem; }
+    .cron-run-loading {
+      font-size: 0.72rem;
+      color: var(--muted);
+      padding: 0.25rem 0;
+    }
     .cron-run-btn {
       font-size: 0.68rem;
       background: var(--surface2);
       border: 1px solid var(--border);
       color: var(--muted);
       border-radius: 4px;
-      padding: 0.1rem 0.5rem;
+      padding: 0.15rem 0.6rem;
       cursor: pointer;
-      flex-shrink: 0;
-      align-self: flex-start;
+      margin-top: 0.35rem;
+      display: inline-block;
     }
-    .cron-run-btn:hover { color: var(--text); border-color: var(--muted); }
+    .cron-run-btn:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+    .cron-run-btn:disabled { opacity: 0.5; cursor: default; }
 
     .tasks-empty {
       display: flex;
@@ -745,11 +752,12 @@ let taskTab = 'active';
 const taskOrigins = new Map();
 let taskProgress = {};  // taskId → { activity, llmStartedAt, lastLlmMs }
 let durationTimer = null;
-// Cron state
+// Cron state — no auto-polling; loaded on demand
 let cronJobs = [];
 let cronStatusSummary = null;
-let cronRuns = {};  // jobId → CronRunLogEntry[]
-let cronPollTimer = null;
+let cronExpanded = {};        // jobId → bool
+let cronRunsState = {};       // jobId → { entries, loading, hasMore }
+const CRON_RUNS_PAGE = 20;
 
 // ── DOM refs ─────────────────────────────────────────────────
 const loginView = document.getElementById('login-view');
@@ -867,7 +875,8 @@ logoutBtn.addEventListener('click', () => {
   chatMessages.innerHTML = '';
   tasks = [];
   cronJobs = [];
-  cronRuns = {};
+  cronExpanded = {};
+  cronRunsState = {};
   cronStatusSummary = null;
   renderTasks();
   showLogin();
@@ -1263,7 +1272,12 @@ function switchTab(tab) {
   tabCron.className = 'tab-btn' + (tab === 'cron' ? ' active' : '');
   cronStatusBar.style.display = tab === 'cron' ? 'flex' : 'none';
   if (tab === 'cron') {
-    renderCronTab();
+    // Load on first switch or if job list is empty; otherwise just render cached state.
+    if (cronJobs.length === 0) {
+      void loadCronData();
+    } else {
+      renderCronTab();
+    }
   } else {
     renderTasks();
   }
@@ -1274,15 +1288,11 @@ function startTaskPoll() {
   void loadTasks();
   taskPollTimer = setInterval(() => void loadTasks(), 8000);
   startDurationTimer();
-  // Also kick off cron polling
-  void loadCronData();
-  cronPollTimer = setInterval(() => void loadCronData(), 15000);
 }
 
 function clearTaskPoll() {
   if (taskPollTimer) { clearInterval(taskPollTimer); taskPollTimer = null; }
   if (durationTimer) { clearInterval(durationTimer); durationTimer = null; }
-  if (cronPollTimer) { clearInterval(cronPollTimer); cronPollTimer = null; }
 }
 
 function startDurationTimer() {
@@ -1489,8 +1499,10 @@ function renderTaskCard(task) {
 }
 
 // ── Cron ─────────────────────────────────────────────────────
+// Load only job list + status; run history is fetched lazily per job.
 async function loadCronData() {
   if (!wsReady || !ws || ws.readyState !== 1) return;
+  renderCronStatusBar('Loading…');
   const [statusRes, listRes] = await Promise.all([
     call('cron.status', {}),
     call('cron.list', { includeDisabled: true }),
@@ -1498,7 +1510,6 @@ async function loadCronData() {
   if (statusRes.ok && statusRes.payload) cronStatusSummary = statusRes.payload;
   if (listRes.ok && listRes.payload && Array.isArray(listRes.payload.jobs)) {
     cronJobs = listRes.payload.jobs;
-    // Update badge with total jobs count
     if (badgeCron) {
       if (cronJobs.length > 0) {
         badgeCron.textContent = cronJobs.length;
@@ -1507,24 +1518,96 @@ async function loadCronData() {
         badgeCron.style.display = 'none';
       }
     }
-    // Load recent runs for each job (up to 3 entries)
-    await Promise.all(cronJobs.map(async (job) => {
-      const runsRes = await call('cron.runs', { id: job.id, limit: 3 });
-      if (runsRes.ok && runsRes.payload && Array.isArray(runsRes.payload.entries)) {
-        cronRuns[job.id] = runsRes.payload.entries;
-      }
-    }));
   }
   if (taskTab === 'cron') renderCronTab();
 }
 
-function renderCronStatusBar() {
+// Fetch the first page of runs for a job and expand it.
+async function expandCronJob(jobId) {
+  cronExpanded[jobId] = true;
+  if (!cronRunsState[jobId]) {
+    cronRunsState[jobId] = { entries: [], loading: true, hasMore: true };
+    renderCronJobRunsSection(jobId);
+    const res = await call('cron.runs', { id: jobId, limit: CRON_RUNS_PAGE });
+    const entries = (res.ok && res.payload && Array.isArray(res.payload.entries))
+      ? res.payload.entries : [];
+    cronRunsState[jobId] = {
+      entries,
+      loading: false,
+      hasMore: entries.length >= CRON_RUNS_PAGE,
+    };
+  }
+  renderCronJobRunsSection(jobId);
+}
+
+// Load more (older) runs for a job using beforeTs cursor.
+async function loadMoreCronRuns(jobId) {
+  const state = cronRunsState[jobId];
+  if (!state || state.loading) return;
+  state.loading = true;
+  renderCronJobRunsSection(jobId);
+  const oldest = state.entries.length > 0 ? state.entries[0].ts : undefined;
+  const res = await call('cron.runs', { id: jobId, limit: CRON_RUNS_PAGE, beforeTs: oldest });
+  const more = (res.ok && res.payload && Array.isArray(res.payload.entries))
+    ? res.payload.entries : [];
+  state.entries = [...more, ...state.entries];
+  state.loading = false;
+  state.hasMore = more.length >= CRON_RUNS_PAGE;
+  renderCronJobRunsSection(jobId);
+}
+
+// Re-render only the runs section of a single expanded job card (no full list re-render).
+function renderCronJobRunsSection(jobId) {
+  const el = document.getElementById('cron-runs-' + jobId);
+  if (!el) return;
+  el.innerHTML = buildCronRunsSectionHtml(jobId);
+}
+
+function buildCronRunsSectionHtml(jobId) {
+  const state = cronRunsState[jobId];
+  if (!state) return '';
+  if (state.loading && state.entries.length === 0) {
+    return '<div class="cron-run-loading">Loading…</div>';
+  }
+  const entries = state.entries;
+  const runsHtml = entries.length === 0
+    ? '<div class="cron-run-loading">No runs recorded yet</div>'
+    : entries.map(r => {
+        const statusClass = r.status === 'ok' ? 'cron-run-ok' : r.status === 'error' ? 'cron-run-err' : 'cron-run-skip';
+        const statusIcon = r.status === 'ok' ? '✓' : r.status === 'error' ? '✗' : '—';
+        const timeAgo = r.ts ? formatRelTime(r.ts) : '';
+        const dur = r.durationMs ? formatDuration(r.durationMs) : '';
+        const tok = r.usage && r.usage.total_tokens ? r.usage.total_tokens.toLocaleString() + ' tok' : '';
+        const text = r.summary || (r.status === 'error' && r.error ? r.error : '');
+        return \`<div class="cron-run-entry">
+          <span class="\${statusClass}">\${statusIcon}</span>
+          <div class="cron-run-summary">
+            \${timeAgo ? '<span style="color:var(--muted)">' + escEl(timeAgo) + '</span> ' : ''}
+            \${dur ? '<span>' + escEl(dur) + '</span> ' : ''}
+            \${tok ? '<span>' + escEl(tok) + '</span>' : ''}
+            \${text ? '<div>' + escEl(text) + '</div>' : ''}
+          </div>
+        </div>\`;
+      }).join('');
+
+  const moreBtn = state.hasMore
+    ? \`<button class="cron-run-btn" onclick="loadMoreCronRuns('\${escEl(jobId)}')" \${state.loading ? 'disabled' : ''}>
+        \${state.loading ? 'Loading…' : 'Load older'}
+      </button>\`
+    : (entries.length > 0 ? '<div class="cron-run-loading" style="font-size:0.68rem">No more history</div>' : '');
+
+  return '<div class="cron-run-list">' + runsHtml + '</div>' + moreBtn;
+}
+
+function renderCronStatusBar(msg) {
   if (!cronStatusBar) return;
-  if (!cronStatusSummary) {
-    cronStatusBar.innerHTML = '<span>Loading…</span>';
+  if (msg) {
+    cronStatusBar.innerHTML = '<span>' + escEl(msg) + '</span>'
+      + '<button class="cron-run-btn" style="margin-left:auto" onclick="void loadCronData()">Refresh</button>';
     return;
   }
   const s = cronStatusSummary;
+  if (!s) return;
   const enabledHtml = s.enabled
     ? '<span class="cron-ok">● Enabled</span>'
     : '<span class="cron-err">● Disabled</span>';
@@ -1536,11 +1619,12 @@ function renderCronStatusBar() {
       ? '<span>Next: ' + escEl(formatDuration(diff)) + '</span>'
       : '<span>Next: soon</span>';
   }
-  cronStatusBar.innerHTML = enabledHtml + jobsHtml + nextHtml;
+  cronStatusBar.innerHTML = enabledHtml + jobsHtml + nextHtml
+    + '<button class="cron-run-btn" style="margin-left:auto" onclick="void loadCronData()">Refresh</button>';
 }
 
 function renderCronTab() {
-  renderCronStatusBar();
+  renderCronStatusBar(null);
   if (cronJobs.length === 0) {
     tasksList.innerHTML = '<div class="tasks-empty">No cron jobs configured</div>';
     return;
@@ -1551,14 +1635,19 @@ function renderCronTab() {
 function formatCronSchedule(job) {
   const sch = job.schedule;
   if (!sch) return '';
-  if (sch.type === 'cron') return sch.cron || '';
-  if (sch.type === 'every') {
-    const unit = sch.unit || 'ms';
-    return 'Every ' + escEl(String(sch.value || '')) + ' ' + escEl(unit);
+  // Protocol uses `kind` field (not `type`).
+  if (sch.kind === 'cron') return sch.expr || '';
+  if (sch.kind === 'every') {
+    const ms = sch.everyMs;
+    if (!ms) return 'every ?';
+    if (ms < 60000) return 'every ' + (ms / 1000).toFixed(0) + 's';
+    if (ms < 3600000) return 'every ' + (ms / 60000).toFixed(0) + 'm';
+    if (ms < 86400000) return 'every ' + (ms / 3600000).toFixed(1) + 'h';
+    return 'every ' + (ms / 86400000).toFixed(1) + 'd';
   }
-  if (sch.type === 'at') {
+  if (sch.kind === 'at') {
     const d = sch.at ? new Date(sch.at) : null;
-    return 'At ' + (d ? d.toLocaleString() : String(sch.at || ''));
+    return 'at ' + (d ? d.toLocaleString() : String(sch.at || ''));
   }
   return JSON.stringify(sch);
 }
@@ -1574,48 +1663,53 @@ function renderCronJobCard(job) {
         : 'soon')
     : null;
 
-  const lastStatusHtml = lastStatus
+  const lastStatusBadge = lastStatus
     ? (lastStatus === 'ok'
-        ? '<span class="cron-run-ok">✓ ok</span>'
+        ? '<span class="cron-run-ok">✓</span>'
         : lastStatus === 'error'
-          ? '<span class="cron-run-err">✗ error</span>'
-          : '<span class="cron-run-skip">— skipped</span>')
+          ? '<span class="cron-run-err">✗</span>'
+          : '<span class="cron-run-skip">—</span>')
     : '';
 
-  const runs = cronRuns[job.id] || [];
-  const runsHtml = runs.length === 0 ? '' : '<div class="cron-run-list">' + runs.map(r => {
-    const statusClass = r.status === 'ok' ? 'cron-run-ok' : r.status === 'error' ? 'cron-run-err' : 'cron-run-skip';
-    const statusIcon = r.status === 'ok' ? '✓' : r.status === 'error' ? '✗' : '—';
-    const timeAgo = r.ts ? formatRelTime(r.ts) : '';
-    const dur = r.durationMs ? formatDuration(r.durationMs) : '';
-    const tok = r.usage && r.usage.total_tokens ? r.usage.total_tokens.toLocaleString() + ' tok' : '';
-    const text = r.summary || (r.status === 'error' && r.error ? r.error : '');
-    return \`<div class="cron-run-entry">
-      <span class="\${statusClass}">\${statusIcon}</span>
-      <div class="cron-run-summary">
-        \${timeAgo ? '<span style="color:var(--muted)">' + escEl(timeAgo) + '</span> ' : ''}
-        \${dur ? '<span>' + escEl(dur) + '</span> ' : ''}
-        \${tok ? '<span>' + escEl(tok) + '</span> ' : ''}
-        \${text ? escEl(text) : ''}
-      </div>
-    </div>\`;
-  }).join('') + '</div>';
+  const isExpanded = !!cronExpanded[job.id];
+  const chevron = isExpanded ? '▾' : '▸';
+  // Inline onclick expands/collapses; toggle is handled via global functions exposed below.
+  const headerOnclick = isExpanded
+    ? \`collapseCronJob('\${escEl(job.id)}')\`
+    : \`expandCronJob('\${escEl(job.id)}')\`;
+
+  const runsSection = isExpanded
+    ? \`<div id="cron-runs-\${escEl(job.id)}" class="cron-run-section">\${buildCronRunsSectionHtml(job.id)}</div>\`
+    : \`<div id="cron-runs-\${escEl(job.id)}" class="cron-run-section" style="display:none;"></div>\`;
 
   return \`<div class="cron-job-card\${enabled ? '' : ' disabled'}">
-    <div class="cron-job-header">
+    <div class="cron-job-header" onclick="\${headerOnclick}" style="cursor:pointer">
       <span class="cron-enabled-dot \${enabled ? 'on' : 'off'}"></span>
       <span class="cron-job-name">\${escEl(job.name || job.id)}</span>
-      \${lastStatusHtml}
+      \${lastStatusBadge}
+      <span style="color:var(--muted);font-size:0.75rem;margin-left:auto">\${chevron}</span>
     </div>
     <div class="cron-job-meta">
       <span class="cron-tag">\${escEl(formatCronSchedule(job))}</span>
       \${nextRunAt ? '<span>Next: ' + escEl(nextRunAt) + '</span>' : ''}
       \${lastRunAt ? '<span>Last: ' + escEl(lastRunAt) + '</span>' : ''}
     </div>
-    \${job.description ? '<div style="font-size:0.72rem;color:var(--muted)">' + escEl(job.description) + '</div>' : ''}
-    \${runsHtml}
+    \${job.description ? '<div style="font-size:0.72rem;color:var(--muted);margin-top:0.15rem">' + escEl(job.description) + '</div>' : ''}
+    \${runsSection}
   </div>\`;
 }
+
+function collapseCronJob(jobId) {
+  cronExpanded[jobId] = false;
+  // Re-render just this card.
+  renderCronTab();
+}
+
+// Expose cron interaction functions to global scope for inline onclick handlers.
+window.expandCronJob = expandCronJob;
+window.collapseCronJob = collapseCronJob;
+window.loadMoreCronRuns = loadMoreCronRuns;
+window.loadCronData = loadCronData;
 
 // ── Boot ─────────────────────────────────────────────────────
 if (token && username) {

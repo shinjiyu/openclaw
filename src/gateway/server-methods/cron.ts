@@ -204,7 +204,7 @@ export const cronHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const p = params as { id?: string; jobId?: string; limit?: number };
+    const p = params as { id?: string; jobId?: string; limit?: number; beforeTs?: number };
     const jobId = p.id ?? p.jobId;
     if (!jobId) {
       respond(
@@ -221,6 +221,7 @@ export const cronHandlers: GatewayRequestHandlers = {
     const entries = await readCronRunLogEntries(logPath, {
       limit: p.limit,
       jobId,
+      beforeTs: p.beforeTs,
     });
     respond(true, { entries }, undefined);
   },

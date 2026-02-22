@@ -65,10 +65,12 @@ export async function appendCronRunLog(
 
 export async function readCronRunLogEntries(
   filePath: string,
-  opts?: { limit?: number; jobId?: string },
+  opts?: { limit?: number; jobId?: string; beforeTs?: number },
 ): Promise<CronRunLogEntry[]> {
   const limit = Math.max(1, Math.min(5000, Math.floor(opts?.limit ?? 200)));
   const jobId = opts?.jobId?.trim() || undefined;
+  // beforeTs is an exclusive upper bound on ts; used as a pagination cursor.
+  const beforeTs = typeof opts?.beforeTs === "number" ? opts.beforeTs : undefined;
   const raw = await fs.readFile(path.resolve(filePath), "utf-8").catch(() => "");
   if (!raw.trim()) {
     return [];
@@ -92,6 +94,10 @@ export async function readCronRunLogEntries(
         continue;
       }
       if (typeof obj.ts !== "number" || !Number.isFinite(obj.ts)) {
+        continue;
+      }
+      // Pagination cursor: skip entries at or after beforeTs.
+      if (beforeTs !== undefined && obj.ts >= beforeTs) {
         continue;
       }
       if (jobId && obj.jobId !== jobId) {
