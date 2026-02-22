@@ -874,6 +874,7 @@ logoutBtn.addEventListener('click', () => {
   clearTaskPoll();
   chatMessages.innerHTML = '';
   tasks = [];
+  loadTasks._lastSnap = '';
   cronJobs = [];
   cronExpanded = {};
   cronRunsState = {};
@@ -1312,14 +1313,21 @@ async function loadTasks() {
   const res = await call('tasks.status', {});
   const status = res.payload;
   if (!res.ok || res.error || !status) return;
-  tasks = [
+  const next = [
     ...(status.running || []),
     ...(status.queued || []),
     ...(status.recent || []),
   ];
+  // Only re-render when data actually changed (compare by JSON snapshot).
+  const nextSnap = JSON.stringify(next);
+  if (nextSnap !== loadTasks._lastSnap) {
+    loadTasks._lastSnap = nextSnap;
+    tasks = next;
+    renderTasks();
+  }
   updateBadges(status);
-  renderTasks();
 }
+loadTasks._lastSnap = '';
 
 function handleTaskEvent(evt) {
   const id = evt.taskId;
@@ -1372,7 +1380,8 @@ function handleTaskEvent(evt) {
 
 function updateTaskActivityUI(taskId) {
   const el = document.getElementById('task-activity-' + taskId);
-  if (!el) { renderTasks(); return; }
+  // Only fall back to full re-render when on a task tab; never clobber the cron view.
+  if (!el) { if (taskTab !== 'cron') renderTasks(); return; }
   const tp = taskProgress[taskId] || {};
   if (tp.activity) {
     let html = '<span class="activity-dot"></span> ' + escEl(tp.activity);
@@ -1417,6 +1426,8 @@ function updateBadges(status) {
 }
 
 function renderTasks() {
+  // Do not touch tasksList when the cron tab is active.
+  if (taskTab === 'cron') return;
   const activeTasks = tasks.filter(t => t.status === 'running' || t.status === 'queued');
   const historyTasks = tasks.filter(t => t.status !== 'running' && t.status !== 'queued');
   const display = taskTab === 'active' ? activeTasks : historyTasks;
