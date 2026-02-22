@@ -810,6 +810,19 @@ if (tasksToggleBtn && tasksPanel && tasksPanelClose) {
   });
 }
 
+// Event delegation for task "View result" buttons (avoids inline onclick quote escaping).
+tasksList.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-load-task]');
+  if (btn) {
+    const taskId = btn.getAttribute('data-load-task');
+    if (taskId) {
+      btn.textContent = 'Loading…';
+      btn.disabled = true;
+      void loadTaskResult(taskId);
+    }
+  }
+});
+
 // ── Utilities ────────────────────────────────────────────────
 function escEl(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1506,8 +1519,8 @@ function renderTaskCard(task) {
     } else if (cached && cached.error) {
       resultHtml = '<div class="task-result error">' + escEl(cached.error) + '</div>';
     } else if (task.status === 'completed' || task.status === 'failed') {
-      // Not in cache (e.g. loaded after reconnect) — offer on-demand fetch.
-      resultHtml = '<div class="task-result-load"><button onclick="loadTaskResult(\'' + escEl(task.id) + '\')" class="task-load-btn">View result</button></div>';
+      // Not in cache (e.g. loaded after reconnect) — offer on-demand fetch via data attr.
+      resultHtml = '<div class="task-result-load"><button class="task-load-btn" data-load-task="' + escEl(task.id) + '">View result</button></div>';
     }
   }
 
@@ -1628,7 +1641,7 @@ function buildCronRunsSectionHtml(jobId) {
       }).join('');
 
   const moreBtn = state.hasMore
-    ? \`<button class="cron-run-btn" onclick="loadMoreCronRuns('\${escEl(jobId)}')" \${state.loading ? 'disabled' : ''}>
+    ? \`<button class="cron-run-btn" data-load-more="\${escEl(jobId)}" \${state.loading ? 'disabled' : ''}>
         \${state.loading ? 'Loading…' : 'Load older'}
       </button>\`
     : (entries.length > 0 ? '<div class="cron-run-loading" style="font-size:0.68rem">No more history</div>' : '');
@@ -1640,7 +1653,7 @@ function renderCronStatusBar(msg) {
   if (!cronStatusBar) return;
   if (msg) {
     cronStatusBar.innerHTML = '<span>' + escEl(msg) + '</span>'
-      + '<button class="cron-run-btn" style="margin-left:auto" onclick="void loadCronData()">Refresh</button>';
+      + '<button class="cron-run-btn" data-cron-refresh style="margin-left:auto">Refresh</button>';
     return;
   }
   const s = cronStatusSummary;
@@ -1657,7 +1670,7 @@ function renderCronStatusBar(msg) {
       : '<span>Next: soon</span>';
   }
   cronStatusBar.innerHTML = enabledHtml + jobsHtml + nextHtml
-    + '<button class="cron-run-btn" style="margin-left:auto" onclick="void loadCronData()">Refresh</button>';
+    + '<button class="cron-run-btn" data-cron-refresh style="margin-left:auto">Refresh</button>';
 }
 
 function renderCronTab() {
@@ -1710,17 +1723,13 @@ function renderCronJobCard(job) {
 
   const isExpanded = !!cronExpanded[job.id];
   const chevron = isExpanded ? '▾' : '▸';
-  // Inline onclick expands/collapses; toggle is handled via global functions exposed below.
-  const headerOnclick = isExpanded
-    ? \`collapseCronJob('\${escEl(job.id)}')\`
-    : \`expandCronJob('\${escEl(job.id)}')\`;
-
+  // Use data-cron-toggle attribute; click handled via event delegation (no inline onclick).
   const runsSection = isExpanded
     ? \`<div id="cron-runs-\${escEl(job.id)}" class="cron-run-section">\${buildCronRunsSectionHtml(job.id)}</div>\`
     : \`<div id="cron-runs-\${escEl(job.id)}" class="cron-run-section" style="display:none;"></div>\`;
 
   return \`<div class="cron-job-card\${enabled ? '' : ' disabled'}">
-    <div class="cron-job-header" onclick="\${headerOnclick}" style="cursor:pointer">
+    <div class="cron-job-header" data-cron-toggle="\${escEl(job.id)}" style="cursor:pointer">
       <span class="cron-enabled-dot \${enabled ? 'on' : 'off'}"></span>
       <span class="cron-job-name">\${escEl(job.name || job.id)}</span>
       \${lastStatusBadge}
@@ -1738,29 +1747,63 @@ function renderCronJobCard(job) {
 
 function collapseCronJob(jobId) {
   cronExpanded[jobId] = false;
-  // Re-render just this card.
   renderCronTab();
 }
 
 // Load a single task's result on demand (for tasks loaded after reconnect where cache is cold).
 async function loadTaskResult(taskId) {
-  const btn = document.querySelector('[onclick="loadTaskResult(\'' + taskId + '\')"]');
-  if (btn) { btn.textContent = 'Loading…'; btn.disabled = true; }
   const res = await call('tasks.get', { id: taskId });
   if (res.ok && res.payload && res.payload.task) {
     const t = res.payload.task;
     taskResultCache[taskId] = { result: t.result, error: t.error };
   }
-  // Re-render the cards so the result appears.
   renderTasks();
 }
 
-// Expose cron interaction functions to global scope for inline onclick handlers.
-window.expandCronJob = expandCronJob;
-window.collapseCronJob = collapseCronJob;
-window.loadMoreCronRuns = loadMoreCronRuns;
-window.loadCronData = loadCronData;
-window.loadTaskResult = loadTaskResult;
+// ── Event delegation (replaces all inline onclick handlers) ──────────────────
+// Cron status bar: refresh
+cronStatusBar.addEventListener('click', (e) => {
+  if (e.target.closest('[data-cron-refresh]')) void loadCronData();
+});
+
+// Cron job list: toggle expand / load-more
+tasksList.addEventListener('click', (e) => {
+  // Task "View result" button
+  const loadTaskBtn = e.target.closest('[data-load-task]');
+  if (loadTaskBtn) {
+    const taskId = loadTaskBtn.getAttribute('data-load-task');
+    if (taskId) {
+      loadTaskBtn.textContent = 'Loading…';
+      loadTaskBtn.disabled = true;
+      void loadTaskResult(taskId);
+    }
+    return;
+  }
+  // Cron job header toggle
+  const cronHeader = e.target.closest('[data-cron-toggle]');
+  if (cronHeader) {
+    const jobId = cronHeader.getAttribute('data-cron-toggle');
+    if (jobId) {
+      if (cronExpanded[jobId]) {
+        cronExpanded[jobId] = false;
+        renderCronTab();
+      } else {
+        void expandCronJob(jobId);
+      }
+    }
+    return;
+  }
+  // Cron "Load older" button
+  const loadMoreBtn = e.target.closest('[data-load-more]');
+  if (loadMoreBtn) {
+    const jobId = loadMoreBtn.getAttribute('data-load-more');
+    if (jobId) {
+      loadMoreBtn.textContent = 'Loading…';
+      loadMoreBtn.disabled = true;
+      void loadMoreCronRuns(jobId);
+    }
+  }
+});
 
 // ── Boot ─────────────────────────────────────────────────────
 if (token && username) {
