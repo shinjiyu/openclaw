@@ -109,7 +109,13 @@ export const tasksHandlers: GatewayRequestHandlers = {
     );
   },
 
-  /** Return active task count and a summary of recent tasks. */
+  /** Return active task count and a summary of recent tasks.
+   *
+   * `result` and `error` fields are intentionally omitted from the response to
+   * keep polling payloads small.  Callers that need the full outcome should
+   * subscribe to the `task` WebSocket event (which carries result/error on
+   * "finished") or call `tasks.get` for a specific task.
+   */
   "tasks.status": ({ params: _params, respond, context }) => {
     const svc = getTaskService(context);
     if (!svc) {
@@ -120,6 +126,9 @@ export const tasksHandlers: GatewayRequestHandlers = {
     const queued = svc.listTasks({ status: "queued", limit: 50 });
     const recent = svc.listTasks({ status: ["completed", "failed", "cancelled"], limit: 20 });
     const totalTokens = [...running, ...recent].reduce((sum, t) => sum + (t.totalTokens ?? 0), 0);
+    // Strip large text fields; callers receive result/error via the "task" WS event.
+    const slim = (tasks: typeof running) =>
+      tasks.map(({ result: _r, error: _e, ...rest }) => rest);
     respond(
       true,
       {
@@ -128,9 +137,9 @@ export const tasksHandlers: GatewayRequestHandlers = {
         runningCount: running.length,
         recentCount: recent.length,
         totalTokens,
-        running,
-        queued,
-        recent,
+        running: slim(running),
+        queued: slim(queued),
+        recent: slim(recent),
       },
       undefined,
     );

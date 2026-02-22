@@ -466,6 +466,17 @@ export function buildPortalHtml(opts: {
       overflow-y: auto;
     }
     .task-result.error { color: var(--error); }
+    .task-result-load { margin-top: 0.35rem; }
+    .task-load-btn {
+      font-size: 0.7rem;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 4px;
+      padding: 0.1rem 0.55rem;
+      cursor: pointer;
+    }
+    .task-load-btn:hover { color: var(--text); border-color: var(--muted); }
 
     /* ── Cron tab ─────────────────────────────────────────────── */
     .cron-status-bar {
@@ -751,6 +762,9 @@ let taskTab = 'active';
 // subsequent progress/started/finished events to only show portal-owned tasks.
 const taskOrigins = new Map();
 let taskProgress = {};  // taskId → { activity, llmStartedAt, lastLlmMs }
+// Cache for task result/error — populated from task.finished WS events or tasks.get.
+// tasks.status omits these large fields to keep polling payloads small.
+let taskResultCache = {};  // taskId → { result?, error? }
 let durationTimer = null;
 // Cron state — no auto-polling; loaded on demand
 let cronJobs = [];
@@ -875,6 +889,7 @@ logoutBtn.addEventListener('click', () => {
   chatMessages.innerHTML = '';
   tasks = [];
   loadTasks._lastSnap = '';
+  taskResultCache = {};
   cronJobs = [];
   cronExpanded = {};
   cronRunsState = {};
@@ -1371,10 +1386,14 @@ function handleTaskEvent(evt) {
   }
 
   if (evt.action === 'created' || evt.action === 'started' || evt.action === 'finished') {
-    void loadTasks();
     if (evt.action === 'finished') {
       delete taskProgress[id];
+      // Cache result/error from the event; tasks.status no longer carries these.
+      if (evt.result !== undefined || evt.error !== undefined) {
+        taskResultCache[id] = { result: evt.result, error: evt.error };
+      }
     }
+    void loadTasks();
   }
 }
 
@@ -1479,10 +1498,17 @@ function renderTaskCard(task) {
   }
 
   let resultHtml = '';
-  if (!isActive && task.result) {
-    resultHtml = '<div class="task-result">' + escEl(task.result) + '</div>';
-  } else if (!isActive && task.error) {
-    resultHtml = '<div class="task-result error">' + escEl(task.error) + '</div>';
+  if (!isActive) {
+    // result/error come from the WS event cache; tasks.status omits them for payload size.
+    const cached = taskResultCache[task.id];
+    if (cached && cached.result) {
+      resultHtml = '<div class="task-result">' + escEl(cached.result) + '</div>';
+    } else if (cached && cached.error) {
+      resultHtml = '<div class="task-result error">' + escEl(cached.error) + '</div>';
+    } else if (task.status === 'completed' || task.status === 'failed') {
+      // Not in cache (e.g. loaded after reconnect) — offer on-demand fetch.
+      resultHtml = '<div class="task-result-load"><button onclick="loadTaskResult(\'' + escEl(task.id) + '\')" class="task-load-btn">View result</button></div>';
+    }
   }
 
   const liveDuration = isActive && task.startedAt
@@ -1716,11 +1742,25 @@ function collapseCronJob(jobId) {
   renderCronTab();
 }
 
+// Load a single task's result on demand (for tasks loaded after reconnect where cache is cold).
+async function loadTaskResult(taskId) {
+  const btn = document.querySelector('[onclick="loadTaskResult(\'' + taskId + '\')"]');
+  if (btn) { btn.textContent = 'Loading…'; btn.disabled = true; }
+  const res = await call('tasks.get', { id: taskId });
+  if (res.ok && res.payload && res.payload.task) {
+    const t = res.payload.task;
+    taskResultCache[taskId] = { result: t.result, error: t.error };
+  }
+  // Re-render the cards so the result appears.
+  renderTasks();
+}
+
 // Expose cron interaction functions to global scope for inline onclick handlers.
 window.expandCronJob = expandCronJob;
 window.collapseCronJob = collapseCronJob;
 window.loadMoreCronRuns = loadMoreCronRuns;
 window.loadCronData = loadCronData;
+window.loadTaskResult = loadTaskResult;
 
 // ── Boot ─────────────────────────────────────────────────────
 if (token && username) {
