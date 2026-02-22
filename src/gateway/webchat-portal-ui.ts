@@ -1031,7 +1031,8 @@ loginForm.addEventListener('submit', async (e) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: usernameInput.value, password: passwordInput.value }),
     });
-    const data = await res.json();
+    let data;
+    try { data = await res.json(); } catch { throw new Error('Server error — please refresh and try again'); }
     if (!res.ok || !data.token) {
       throw new Error(data.error || 'Login failed');
     }
