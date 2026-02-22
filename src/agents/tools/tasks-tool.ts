@@ -16,6 +16,7 @@ function buildTasksCreateTool(originSessionKey?: string): AnyAgentTool {
       "Returns immediately with a task id. The task executes in its own isolated session.",
       "Results are automatically delivered back to this conversation when the task completes.",
       "After creating a task, immediately reply to the user confirming receipt — do NOT poll or wait.",
+      "Before creating, call tasks_list to check for existing queued/running tasks with the same goal to avoid duplicates.",
     ].join(" "),
     parameters: Type.Object({
       message: Type.String({
@@ -27,14 +28,12 @@ function buildTasksCreateTool(originSessionKey?: string): AnyAgentTool {
       thinking: Type.Optional(
         Type.String({ description: "Thinking level override (low/medium/high)." }),
       ),
-      timeoutSeconds: Type.Optional(Type.Number({ description: "Max execution time in seconds." })),
     }),
     execute: async (_toolCallId: string, params: unknown) => {
       const p = params as {
         message: string;
         model?: string;
         thinking?: string;
-        timeoutSeconds?: number;
       };
       const payload = {
         ...p,

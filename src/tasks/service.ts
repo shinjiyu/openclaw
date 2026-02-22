@@ -24,7 +24,7 @@ const MAX_CONCURRENT_TASKS = 3;
  * Default timeout for background tasks when not specified by the caller (30 minutes).
  * Longer than the interactive agent default (10 min) because tasks run fully autonomously.
  */
-const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_TASK_TIMEOUT_MS = 4 * 60 * 60 * 1000; // 4 hours — tasks can be long-running
 
 /**
  * Watchdog: how much extra time beyond the task's own timeout before we force-fail it.
