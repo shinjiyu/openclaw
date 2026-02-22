@@ -295,22 +295,16 @@ export async function runEmbeddedAttempt(
     // Session key shapes:
     //   CLI               : empty / undefined              → never chatMode
     //   Cron / subagent   : cron:* / subagent:* prefixes   → never chatMode
-    //   Portal            : portal:* / agent:<id>:portal:* → per config (default off)
-    //   Channel chat      : everything else (agent:*:main, agent:*:<channel>:*, ...)
-    //                       covers all messaging channels regardless of dmScope → per config (default on)
+    //   All chat sessions : portal / channel / feishu etc. → per config (default on)
     const sessionKeyStr = params.sessionKey ?? "";
     const isCliSession = !sessionKeyStr;
     const isBackgroundSession =
       isSubagentSessionKey(sessionKeyStr) || isCronSessionKey(sessionKeyStr);
-    const isPortalSession =
-      sessionKeyStr.startsWith("portal:") || sessionKeyStr.includes(":portal:");
     const resolvedChatMode =
       params.chatMode ??
       (isCliSession || isBackgroundSession
         ? false
-        : isPortalSession
-          ? (params.config?.agents?.defaults?.chatMode ?? false)
-          : (params.config?.agents?.defaults?.chatMode ?? true)); // all channel sessions: default on
+        : (params.config?.agents?.defaults?.chatMode ?? true)); // all chat sessions: default on
     const toolsRaw = params.disableTools
       ? []
       : createOpenClawCodingTools({
