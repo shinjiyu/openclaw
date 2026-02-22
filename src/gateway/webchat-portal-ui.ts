@@ -1832,7 +1832,9 @@ function renderCronModalHistory() {
   } else if (entries.length === 0) {
     cronModalHistory.innerHTML = '<div class="cron-modal-empty">No runs recorded yet.</div>';
   } else {
-    cronModalHistory.innerHTML = entries.map(r => {
+    // API returns oldest-first; display newest-first.
+    const displayEntries = [...entries].reverse();
+    cronModalHistory.innerHTML = displayEntries.map(r => {
       const isOk = r.status === 'ok';
       const isErr = r.status === 'error';
       const icon = isOk ? '<span class="cron-run-ok">✓</span>'
