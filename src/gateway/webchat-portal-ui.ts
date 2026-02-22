@@ -496,13 +496,16 @@ export function buildPortalHtml(opts: {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
-      padding: 0.65rem 0.9rem;
+      padding: 0.7rem 1rem;
       margin-bottom: 0.5rem;
       display: flex;
       flex-direction: column;
-      gap: 0.3rem;
+      gap: 0.35rem;
+      cursor: pointer;
+      transition: border-color 0.15s;
     }
-    .cron-job-card.disabled { opacity: 0.5; }
+    .cron-job-card:hover { border-color: rgba(108,125,255,0.5); }
+    .cron-job-card.disabled { opacity: 0.55; }
     .cron-job-header {
       display: flex;
       align-items: center;
@@ -530,6 +533,7 @@ export function buildPortalHtml(opts: {
       display: flex;
       gap: 0.5rem;
       flex-wrap: wrap;
+      align-items: center;
     }
     .cron-job-meta .cron-tag {
       background: var(--surface2);
@@ -538,50 +542,177 @@ export function buildPortalHtml(opts: {
       border-radius: 99px;
       font-size: 0.68rem;
     }
-    .cron-run-list {
-      margin-top: 0.3rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.2rem;
-    }
-    .cron-run-entry {
-      font-size: 0.72rem;
-      color: var(--muted);
-      display: flex;
-      gap: 0.4rem;
-      align-items: flex-start;
-      border-top: 1px solid var(--border);
-      padding-top: 0.25rem;
-    }
     .cron-run-ok { color: var(--success); }
     .cron-run-err { color: var(--error); }
     .cron-run-skip { color: var(--warn); }
-    .cron-run-summary {
-      flex: 1;
-      white-space: pre-wrap;
-      word-break: break-word;
-      max-height: 60px;
-      overflow-y: auto;
-    }
-    .cron-run-section { margin-top: 0.4rem; }
-    .cron-run-loading {
-      font-size: 0.72rem;
-      color: var(--muted);
-      padding: 0.25rem 0;
-    }
     .cron-run-btn {
-      font-size: 0.68rem;
+      font-size: 0.72rem;
       background: var(--surface2);
       border: 1px solid var(--border);
       color: var(--muted);
-      border-radius: 4px;
-      padding: 0.15rem 0.6rem;
+      border-radius: 6px;
+      padding: 0.3rem 0.9rem;
       cursor: pointer;
-      margin-top: 0.35rem;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      transition: color 0.15s, border-color 0.15s;
     }
-    .cron-run-btn:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
-    .cron-run-btn:disabled { opacity: 0.5; cursor: default; }
+    .cron-run-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+    .cron-run-btn:disabled { opacity: 0.4; cursor: default; }
+
+    /* ── Cron detail modal ─────────────────────────────────────── */
+    .cron-modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(2px);
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .cron-modal-overlay.open { display: flex; }
+    .cron-modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 580px;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+    }
+    .cron-modal-head {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .cron-modal-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text);
+      flex: 1;
+    }
+    .cron-modal-close {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: var(--radius-sm);
+      padding: 0.3rem 0.6rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .cron-modal-close:hover { color: var(--text); border-color: var(--muted); }
+    .cron-modal-info {
+      padding: 0.85rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+      color: var(--muted);
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .cron-modal-desc {
+      padding: 0.5rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .cron-modal-history {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem 0;
+    }
+    .cron-modal-history::-webkit-scrollbar { width: 4px; }
+    .cron-modal-history::-webkit-scrollbar-track { background: transparent; }
+    .cron-modal-history::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .cron-hist-entry {
+      padding: 0.7rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-start;
+    }
+    .cron-hist-entry:last-child { border-bottom: none; }
+    .cron-hist-icon {
+      font-size: 0.85rem;
+      line-height: 1.4;
+      flex-shrink: 0;
+      width: 1.2rem;
+      text-align: center;
+    }
+    .cron-hist-body {
+      flex: 1;
+      min-width: 0;
+    }
+    .cron-hist-meta {
+      font-size: 0.72rem;
+      color: var(--muted);
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.25rem;
+    }
+    .cron-hist-text {
+      font-size: 0.8rem;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .cron-hist-text.err { color: var(--error); }
+    .cron-modal-footer {
+      padding: 0.75rem 1.25rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+    .cron-modal-page-info {
+      font-size: 0.75rem;
+      color: var(--muted);
+      flex: 1;
+      text-align: center;
+    }
+    .cron-modal-empty {
+      padding: 2rem 1.25rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .cron-modal-spinner {
+      padding: 1.5rem 1.25rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    /* Mobile: full-height bottom sheet */
+    @media (max-width: 640px) {
+      .cron-modal-overlay {
+        padding: 0;
+        align-items: flex-end;
+      }
+      .cron-modal {
+        max-width: 100%;
+        max-height: 90vh;
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+        border-bottom: none;
+      }
+    }
 
     .tasks-empty {
       display: flex;
@@ -738,6 +869,26 @@ export function buildPortalHtml(opts: {
   </div>
 </div>
 
+<!-- Cron detail modal -->
+<div class="cron-modal-overlay" id="cron-modal-overlay">
+  <div class="cron-modal" role="dialog" aria-modal="true">
+    <div class="cron-modal-head">
+      <div class="cron-modal-title" id="cron-modal-title">—</div>
+      <button class="cron-modal-close" id="cron-modal-close">✕</button>
+    </div>
+    <div class="cron-modal-info" id="cron-modal-info"></div>
+    <div class="cron-modal-desc" id="cron-modal-desc" style="display:none;"></div>
+    <div class="cron-modal-history" id="cron-modal-history">
+      <div class="cron-modal-spinner">Loading…</div>
+    </div>
+    <div class="cron-modal-footer">
+      <button class="cron-run-btn" id="cron-modal-prev">← Newer</button>
+      <div class="cron-modal-page-info" id="cron-modal-page-info"></div>
+      <button class="cron-run-btn" id="cron-modal-next">Older →</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function() {
 'use strict';
@@ -769,9 +920,9 @@ let durationTimer = null;
 // Cron state — no auto-polling; loaded on demand
 let cronJobs = [];
 let cronStatusSummary = null;
-let cronExpanded = {};        // jobId → bool
-let cronRunsState = {};       // jobId → { entries, loading, hasMore }
-const CRON_RUNS_PAGE = 20;
+// Modal state: null when closed, or { jobId, pages: {0:[...], 1:[...]}, currentPage, loading, noMore }
+let cronModal = null;
+const CRON_PAGE_SIZE = 5;
 
 // ── DOM refs ─────────────────────────────────────────────────
 const loginView = document.getElementById('login-view');
@@ -795,6 +946,15 @@ const badgeActive = document.getElementById('badge-active');
 const badgeHistory = document.getElementById('badge-history');
 const badgeCron = document.getElementById('badge-cron');
 const cronStatusBar = document.getElementById('cron-status-bar');
+const cronModalOverlay = document.getElementById('cron-modal-overlay');
+const cronModalTitle = document.getElementById('cron-modal-title');
+const cronModalInfo = document.getElementById('cron-modal-info');
+const cronModalDesc = document.getElementById('cron-modal-desc');
+const cronModalHistory = document.getElementById('cron-modal-history');
+const cronModalPageInfo = document.getElementById('cron-modal-page-info');
+const cronModalPrev = document.getElementById('cron-modal-prev');
+const cronModalNext = document.getElementById('cron-modal-next');
+const cronModalClose = document.getElementById('cron-modal-close');
 const tasksPanel = document.getElementById('tasks-panel');
 const tasksToggleBtn = document.getElementById('tasks-toggle-btn');
 const tasksToggleBadge = document.getElementById('tasks-toggle-badge');
@@ -904,9 +1064,9 @@ logoutBtn.addEventListener('click', () => {
   loadTasks._lastSnap = '';
   taskResultCache = {};
   cronJobs = [];
-  cronExpanded = {};
-  cronRunsState = {};
+  cronModal = null;
   cronStatusSummary = null;
+  closeCronModal();
   renderTasks();
   showLogin();
 });
@@ -1549,7 +1709,7 @@ function renderTaskCard(task) {
 }
 
 // ── Cron ─────────────────────────────────────────────────────
-// Load only job list + status; run history is fetched lazily per job.
+// Load only job list + status; run history is fetched lazily inside the modal.
 async function loadCronData() {
   if (!wsReady || !ws || ws.readyState !== 1) return;
   renderCronStatusBar('Loading…');
@@ -1572,81 +1732,146 @@ async function loadCronData() {
   if (taskTab === 'cron') renderCronTab();
 }
 
-// Fetch the first page of runs for a job and expand it.
-async function expandCronJob(jobId) {
-  cronExpanded[jobId] = true;
-  if (!cronRunsState[jobId]) {
-    cronRunsState[jobId] = { entries: [], loading: true, hasMore: true };
-    renderCronJobRunsSection(jobId);
-    const res = await call('cron.runs', { id: jobId, limit: CRON_RUNS_PAGE });
-    const entries = (res.ok && res.payload && Array.isArray(res.payload.entries))
-      ? res.payload.entries : [];
-    cronRunsState[jobId] = {
-      entries,
-      loading: false,
-      hasMore: entries.length >= CRON_RUNS_PAGE,
-    };
-  }
-  renderCronJobRunsSection(jobId);
+// ── Cron modal ────────────────────────────────────────────────
+function openCronJobModal(jobId) {
+  const job = cronJobs.find(j => j.id === jobId);
+  if (!job) return;
+  cronModal = { jobId, job, pages: {}, currentPage: 0, loading: false, noMore: false };
+  renderCronModalShell();
+  cronModalOverlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  void fetchCronModalPage(0);
 }
 
-// Load more (older) runs for a job using beforeTs cursor.
-async function loadMoreCronRuns(jobId) {
-  const state = cronRunsState[jobId];
-  if (!state || state.loading) return;
-  state.loading = true;
-  renderCronJobRunsSection(jobId);
-  const oldest = state.entries.length > 0 ? state.entries[0].ts : undefined;
-  const res = await call('cron.runs', { id: jobId, limit: CRON_RUNS_PAGE, beforeTs: oldest });
-  const more = (res.ok && res.payload && Array.isArray(res.payload.entries))
+function closeCronModal() {
+  if (cronModalOverlay) cronModalOverlay.classList.remove('open');
+  document.body.style.overflow = '';
+  cronModal = null;
+}
+
+function renderCronModalShell() {
+  if (!cronModal) return;
+  const { job } = cronModal;
+  const state = job.state || {};
+  const enabled = job.enabled !== false;
+
+  cronModalTitle.textContent = job.name || job.id;
+
+  const enabledBadge = enabled
+    ? '<span class="cron-run-ok">● On</span>'
+    : '<span style="color:var(--muted)">● Off</span>';
+  const sch = '<span class="cron-tag" style="font-size:0.72rem;background:var(--surface2);border:1px solid var(--border);padding:0.05rem 0.4rem;border-radius:99px">'
+    + escEl(formatCronSchedule(job)) + '</span>';
+  const lastStatus = state.lastStatus;
+  const lastBadge = lastStatus
+    ? (lastStatus === 'ok' ? '<span class="cron-run-ok">✓ ok</span>'
+       : lastStatus === 'error' ? '<span class="cron-run-err">✗ error</span>'
+       : '<span class="cron-run-skip">— skipped</span>')
+    : '';
+  const lastRunAt = state.lastRunAtMs ? formatRelTime(state.lastRunAtMs) : null;
+  const nextRunAt = state.nextRunAtMs
+    ? (state.nextRunAtMs > Date.now() ? formatDuration(state.nextRunAtMs - Date.now()) : 'soon')
+    : null;
+
+  cronModalInfo.innerHTML = enabledBadge + sch
+    + (lastBadge ? 'Last: ' + lastBadge : '')
+    + (lastRunAt ? '<span>' + escEl(lastRunAt) + '</span>' : '')
+    + (nextRunAt ? '<span>Next: ' + escEl(nextRunAt) + '</span>' : '');
+
+  if (job.description) {
+    cronModalDesc.textContent = job.description;
+    cronModalDesc.style.display = '';
+  } else {
+    cronModalDesc.style.display = 'none';
+  }
+}
+
+async function fetchCronModalPage(page) {
+  if (!cronModal || cronModal.loading) return;
+  // Already cached
+  if (cronModal.pages[page]) {
+    cronModal.currentPage = page;
+    renderCronModalHistory();
+    return;
+  }
+  cronModal.loading = true;
+  cronModalHistory.innerHTML = '<div class="cron-modal-spinner">Loading…</div>';
+  updateCronModalFooter();
+
+  // Compute cursor: for page 0 no cursor; for page N use oldest ts of page N-1
+  let beforeTs;
+  if (page > 0) {
+    const prevPage = cronModal.pages[page - 1];
+    if (prevPage && prevPage.length > 0) {
+      beforeTs = prevPage[0].ts; // oldest entry of previous page
+    }
+  }
+
+  const params = { id: cronModal.jobId, limit: CRON_PAGE_SIZE };
+  if (beforeTs !== undefined) params.beforeTs = beforeTs;
+  const res = await call('cron.runs', params);
+
+  if (!cronModal) return; // modal closed while loading
+  const entries = (res.ok && res.payload && Array.isArray(res.payload.entries))
     ? res.payload.entries : [];
-  state.entries = [...more, ...state.entries];
-  state.loading = false;
-  state.hasMore = more.length >= CRON_RUNS_PAGE;
-  renderCronJobRunsSection(jobId);
+
+  cronModal.pages[page] = entries;
+  cronModal.currentPage = page;
+  cronModal.loading = false;
+  cronModal.noMore = entries.length < CRON_PAGE_SIZE;
+  renderCronModalHistory();
 }
 
-// Re-render only the runs section of a single expanded job card (no full list re-render).
-function renderCronJobRunsSection(jobId) {
-  const el = document.getElementById('cron-runs-' + jobId);
-  if (!el) return;
-  el.innerHTML = buildCronRunsSectionHtml(jobId);
-}
+function renderCronModalHistory() {
+  if (!cronModal) return;
+  const page = cronModal.currentPage;
+  const entries = cronModal.pages[page] || [];
 
-function buildCronRunsSectionHtml(jobId) {
-  const state = cronRunsState[jobId];
-  if (!state) return '';
-  if (state.loading && state.entries.length === 0) {
-    return '<div class="cron-run-loading">Loading…</div>';
-  }
-  const entries = state.entries;
-  const runsHtml = entries.length === 0
-    ? '<div class="cron-run-loading">No runs recorded yet</div>'
-    : entries.map(r => {
-        const statusClass = r.status === 'ok' ? 'cron-run-ok' : r.status === 'error' ? 'cron-run-err' : 'cron-run-skip';
-        const statusIcon = r.status === 'ok' ? '✓' : r.status === 'error' ? '✗' : '—';
-        const timeAgo = r.ts ? formatRelTime(r.ts) : '';
-        const dur = r.durationMs ? formatDuration(r.durationMs) : '';
-        const tok = r.usage && r.usage.total_tokens ? r.usage.total_tokens.toLocaleString() + ' tok' : '';
-        const text = r.summary || (r.status === 'error' && r.error ? r.error : '');
-        return \`<div class="cron-run-entry">
-          <span class="\${statusClass}">\${statusIcon}</span>
-          <div class="cron-run-summary">
-            \${timeAgo ? '<span style="color:var(--muted)">' + escEl(timeAgo) + '</span> ' : ''}
-            \${dur ? '<span>' + escEl(dur) + '</span> ' : ''}
+  if (cronModal.loading) {
+    cronModalHistory.innerHTML = '<div class="cron-modal-spinner">Loading…</div>';
+  } else if (entries.length === 0) {
+    cronModalHistory.innerHTML = '<div class="cron-modal-empty">No runs recorded yet.</div>';
+  } else {
+    cronModalHistory.innerHTML = entries.map(r => {
+      const isOk = r.status === 'ok';
+      const isErr = r.status === 'error';
+      const icon = isOk ? '<span class="cron-run-ok">✓</span>'
+                 : isErr ? '<span class="cron-run-err">✗</span>'
+                 : '<span class="cron-run-skip">—</span>';
+      const timeAgo = r.ts ? formatRelTime(r.ts) : '';
+      const absTime = r.ts ? new Date(r.ts).toLocaleString() : '';
+      const dur = r.durationMs ? formatDuration(r.durationMs) : '';
+      const tok = r.usage && r.usage.total_tokens ? r.usage.total_tokens.toLocaleString() + ' tok' : '';
+      const text = r.summary || (r.error || '');
+      return \`<div class="cron-hist-entry">
+        <div class="cron-hist-icon">\${icon}</div>
+        <div class="cron-hist-body">
+          <div class="cron-hist-meta">
+            \${timeAgo ? '<span title="' + escEl(absTime) + '">' + escEl(timeAgo) + '</span>' : ''}
+            \${dur ? '<span>' + escEl(dur) + '</span>' : ''}
             \${tok ? '<span>' + escEl(tok) + '</span>' : ''}
-            \${text ? '<div>' + escEl(text) + '</div>' : ''}
           </div>
-        </div>\`;
-      }).join('');
+          \${text ? '<div class="cron-hist-text' + (isErr && !r.summary ? ' err' : '') + '">' + escEl(text) + '</div>' : ''}
+        </div>
+      </div>\`;
+    }).join('');
+  }
 
-  const moreBtn = state.hasMore
-    ? \`<button class="cron-run-btn" data-load-more="\${escEl(jobId)}" \${state.loading ? 'disabled' : ''}>
-        \${state.loading ? 'Loading…' : 'Load older'}
-      </button>\`
-    : (entries.length > 0 ? '<div class="cron-run-loading" style="font-size:0.68rem">No more history</div>' : '');
+  updateCronModalFooter();
+}
 
-  return '<div class="cron-run-list">' + runsHtml + '</div>' + moreBtn;
+function updateCronModalFooter() {
+  if (!cronModal) return;
+  const page = cronModal.currentPage;
+  const hasNext = !cronModal.noMore || cronModal.pages[page + 1];
+  const hasPrev = page > 0;
+
+  cronModalPrev.disabled = !hasPrev || cronModal.loading;
+  cronModalNext.disabled = (!hasNext && !cronModal.pages[page + 1]) || cronModal.loading;
+
+  const loaded = Object.keys(cronModal.pages).length;
+  const pageLabel = 'Page ' + (page + 1) + (loaded > page + 1 || !cronModal.noMore ? '+' : '');
+  cronModalPageInfo.textContent = cronModal.loading ? 'Loading…' : pageLabel;
 }
 
 function renderCronStatusBar(msg) {
@@ -1714,40 +1939,26 @@ function renderCronJobCard(job) {
     : null;
 
   const lastStatusBadge = lastStatus
-    ? (lastStatus === 'ok'
-        ? '<span class="cron-run-ok">✓</span>'
-        : lastStatus === 'error'
-          ? '<span class="cron-run-err">✗</span>'
-          : '<span class="cron-run-skip">—</span>')
+    ? (lastStatus === 'ok' ? '<span class="cron-run-ok">✓</span>'
+       : lastStatus === 'error' ? '<span class="cron-run-err">✗</span>'
+       : '<span class="cron-run-skip">—</span>')
     : '';
 
-  const isExpanded = !!cronExpanded[job.id];
-  const chevron = isExpanded ? '▾' : '▸';
-  // Use data-cron-toggle attribute; click handled via event delegation (no inline onclick).
-  const runsSection = isExpanded
-    ? \`<div id="cron-runs-\${escEl(job.id)}" class="cron-run-section">\${buildCronRunsSectionHtml(job.id)}</div>\`
-    : \`<div id="cron-runs-\${escEl(job.id)}" class="cron-run-section" style="display:none;"></div>\`;
-
-  return \`<div class="cron-job-card\${enabled ? '' : ' disabled'}">
-    <div class="cron-job-header" data-cron-toggle="\${escEl(job.id)}" style="cursor:pointer">
+  // Whole card is clickable; event delegation opens modal via data-cron-open.
+  return \`<div class="cron-job-card\${enabled ? '' : ' disabled'}" data-cron-open="\${escEl(job.id)}">
+    <div class="cron-job-header">
       <span class="cron-enabled-dot \${enabled ? 'on' : 'off'}"></span>
       <span class="cron-job-name">\${escEl(job.name || job.id)}</span>
       \${lastStatusBadge}
-      <span style="color:var(--muted);font-size:0.75rem;margin-left:auto">\${chevron}</span>
+      <span style="color:var(--muted);font-size:0.75rem;margin-left:auto">▸</span>
     </div>
     <div class="cron-job-meta">
       <span class="cron-tag">\${escEl(formatCronSchedule(job))}</span>
       \${nextRunAt ? '<span>Next: ' + escEl(nextRunAt) + '</span>' : ''}
       \${lastRunAt ? '<span>Last: ' + escEl(lastRunAt) + '</span>' : ''}
     </div>
-    \${job.description ? '<div style="font-size:0.72rem;color:var(--muted);margin-top:0.15rem">' + escEl(job.description) + '</div>' : ''}
-    \${runsSection}
+    \${job.description ? '<div style="font-size:0.72rem;color:var(--muted)">' + escEl(job.description) + '</div>' : ''}
   </div>\`;
-}
-
-function collapseCronJob(jobId) {
-  cronExpanded[jobId] = false;
-  renderCronTab();
 }
 
 // Load a single task's result on demand (for tasks loaded after reconnect where cache is cold).
@@ -1760,13 +1971,13 @@ async function loadTaskResult(taskId) {
   renderTasks();
 }
 
-// ── Event delegation (replaces all inline onclick handlers) ──────────────────
+// ── Event delegation ─────────────────────────────────────────
 // Cron status bar: refresh
 cronStatusBar.addEventListener('click', (e) => {
   if (e.target.closest('[data-cron-refresh]')) void loadCronData();
 });
 
-// Cron job list: toggle expand / load-more
+// Cron job list: open modal on card click
 tasksList.addEventListener('click', (e) => {
   // Task "View result" button
   const loadTaskBtn = e.target.closest('[data-load-task]');
@@ -1779,30 +1990,31 @@ tasksList.addEventListener('click', (e) => {
     }
     return;
   }
-  // Cron job header toggle
-  const cronHeader = e.target.closest('[data-cron-toggle]');
-  if (cronHeader) {
-    const jobId = cronHeader.getAttribute('data-cron-toggle');
-    if (jobId) {
-      if (cronExpanded[jobId]) {
-        cronExpanded[jobId] = false;
-        renderCronTab();
-      } else {
-        void expandCronJob(jobId);
-      }
-    }
-    return;
+  // Cron job card: open detail modal
+  const cronCard = e.target.closest('[data-cron-open]');
+  if (cronCard) {
+    const jobId = cronCard.getAttribute('data-cron-open');
+    if (jobId) openCronJobModal(jobId);
   }
-  // Cron "Load older" button
-  const loadMoreBtn = e.target.closest('[data-load-more]');
-  if (loadMoreBtn) {
-    const jobId = loadMoreBtn.getAttribute('data-load-more');
-    if (jobId) {
-      loadMoreBtn.textContent = 'Loading…';
-      loadMoreBtn.disabled = true;
-      void loadMoreCronRuns(jobId);
-    }
-  }
+});
+
+// Cron modal buttons
+cronModalClose.addEventListener('click', closeCronModal);
+cronModalOverlay.addEventListener('click', (e) => {
+  // Close when clicking the backdrop (not the modal itself)
+  if (e.target === cronModalOverlay) closeCronModal();
+});
+cronModalPrev.addEventListener('click', () => {
+  if (!cronModal || cronModal.loading || cronModal.currentPage === 0) return;
+  void fetchCronModalPage(cronModal.currentPage - 1);
+});
+cronModalNext.addEventListener('click', () => {
+  if (!cronModal || cronModal.loading) return;
+  void fetchCronModalPage(cronModal.currentPage + 1);
+});
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && cronModal) closeCronModal();
 });
 
 // ── Boot ─────────────────────────────────────────────────────
