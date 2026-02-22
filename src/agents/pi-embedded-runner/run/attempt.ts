@@ -292,23 +292,25 @@ export async function runEmbeddedAttempt(
     // Check if the model supports native image input
     const modelHasVision = params.model.input?.includes("image") ?? false;
     // Resolve chatMode: explicit param wins.
-    // Config fallback (agents.defaults.chatMode) is only allowed for channel sessions that
-    // intentionally run in "delegate to tasks" mode.  This prevents bleeding into
-    // auto-reply, subagent, and CLI sessions.
-    // Portal:  "portal:<user>"  or  "agent:<id>:portal:<user>"
-    // Feishu:  "agent:<id>:feishu:<kind>:<peer>"  — defaults to chatMode=true so users
-    //          interact via task delegation rather than free-form tool execution.
+    // Session key shapes:
+    //   CLI               : empty / undefined              → never chatMode
+    //   Cron / subagent   : cron:* / subagent:* prefixes   → never chatMode
+    //   Portal            : portal:* / agent:<id>:portal:* → per config (default off)
+    //   Channel chat      : everything else (agent:*:main, agent:*:<channel>:*, ...)
+    //                       covers all messaging channels regardless of dmScope → per config (default on)
     const sessionKeyStr = params.sessionKey ?? "";
+    const isCliSession = !sessionKeyStr;
+    const isBackgroundSession =
+      isSubagentSessionKey(sessionKeyStr) || isCronSessionKey(sessionKeyStr);
     const isPortalSession =
       sessionKeyStr.startsWith("portal:") || sessionKeyStr.includes(":portal:");
-    const isFeishuSession = sessionKeyStr.includes(":feishu:");
     const resolvedChatMode =
       params.chatMode ??
-      (isPortalSession
-        ? (params.config?.agents?.defaults?.chatMode ?? false)
-        : isFeishuSession
-          ? (params.config?.agents?.defaults?.chatMode ?? true) // feishu: default on
-          : false);
+      (isCliSession || isBackgroundSession
+        ? false
+        : isPortalSession
+          ? (params.config?.agents?.defaults?.chatMode ?? false)
+          : (params.config?.agents?.defaults?.chatMode ?? true)); // all channel sessions: default on
     const toolsRaw = params.disableTools
       ? []
       : createOpenClawCodingTools({

@@ -405,14 +405,10 @@ export class TaskService {
 
       let summaryText: string;
       if (outcome.status === "completed") {
-        const resultSnippet = outcome.result
-          ? `\n\n${outcome.result.slice(0, 500)}${outcome.result.length > 500 ? "…" : ""}`
-          : "";
+        const resultSnippet = outcome.result ? `\n\n${outcome.result}` : "";
         summaryText = `[Task completed ✓${durationInfo}${tokenInfo}]${resultSnippet}`;
       } else {
-        const errorSnippet = outcome.error
-          ? `\n\nError: ${String(outcome.error).slice(0, 200)}`
-          : "";
+        const errorSnippet = outcome.error ? `\n\nError: ${String(outcome.error)}` : "";
         summaryText = `[Task failed ✗${durationInfo}${tokenInfo}]${errorSnippet}`;
       }
 

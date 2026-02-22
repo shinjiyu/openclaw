@@ -1335,9 +1335,9 @@ function renderTaskCard(task) {
 
   let resultHtml = '';
   if (!isActive && task.result) {
-    resultHtml = '<div class="task-result">' + escEl(task.result.slice(0, 400)) + (task.result.length > 400 ? '…' : '') + '</div>';
+    resultHtml = '<div class="task-result">' + escEl(task.result) + '</div>';
   } else if (!isActive && task.error) {
-    resultHtml = '<div class="task-result error">' + escEl(task.error.slice(0, 300)) + '</div>';
+    resultHtml = '<div class="task-result error">' + escEl(task.error) + '</div>';
   }
 
   const liveDuration = isActive && task.startedAt
