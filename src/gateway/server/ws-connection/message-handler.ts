@@ -392,7 +392,8 @@ export function attachGatewayWsMessageHandler(params: {
         // Check if this is a WebChat Portal token (issued by POST /portal/api/auth).
         let portalUser: string | undefined;
         const rawAuthToken = connectParams.auth?.token ?? "";
-        if (rawAuthToken && configSnapshot.gateway?.webchatPortal?.enabled) {
+        const webchatPortalEnabled = Boolean(configSnapshot.gateway?.webchatPortal?.enabled);
+        if (rawAuthToken && webchatPortalEnabled) {
           const { gatewayPortalTokenStore } = await import("../../webchat-portal-auth.js");
           const portalEntry = gatewayPortalTokenStore.verify(rawAuthToken);
           if (portalEntry) {
