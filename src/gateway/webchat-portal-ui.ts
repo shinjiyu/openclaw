@@ -1635,7 +1635,7 @@ function renderCronTab() {
 function formatCronSchedule(job) {
   const sch = job.schedule;
   if (!sch) return '';
-  // Protocol uses `kind` field (not `type`).
+  // Protocol schedule uses "kind" field (not "type").
   if (sch.kind === 'cron') return sch.expr || '';
   if (sch.kind === 'every') {
     const ms = sch.everyMs;
